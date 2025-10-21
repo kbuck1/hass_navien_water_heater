@@ -22,6 +22,7 @@ class NavilinkConnect():
         :param passwd: The corresponding user's password
         :return: returns nothing
         """
+        _LOGGER.debug("Initializing NaviLink connection")
         self.userId = userId
         self.passwd = passwd
         self.device_index = device_index
@@ -43,6 +44,17 @@ class NavilinkConnect():
         self.response_events = {}
         self.client_lock = asyncio.Lock()
         self.last_poll = None
+
+    def _uses_mgpp_protocol(self):
+        """
+        Determine if the device uses the MGPP protocol.
+        
+        Currently, only device type 52 (NWP500) uses MGPP protocol.
+        This function can be extended to support other device types in the future.
+        
+        :return: True if device uses MGPP protocol, False otherwise
+        """
+        return self.device_type == 52
 
     async def start(self):
         if self.polling_interval > 0:
@@ -122,6 +134,7 @@ class NavilinkConnect():
                     response_data["data"]
                     device_info_list = response_data["data"]
                     self.device_info = device_info_list[self.device_index]
+                    _LOGGER.debug("Response data: " + str(response_data))
                 except:
                     raise NoResponseData("Unexpected problem while retrieving device list")
                 
@@ -131,8 +144,13 @@ class NavilinkConnect():
 
     async def _connect_aws_mqtt(self):
         self.client_id = str(uuid.uuid4())
-        self.topics = Topics(self.user_info, self.device_info, self.client_id)
-        self.messages = Messages(self.device_info, self.client_id, self.topics)
+        self.device_type = int(self.device_info.get("deviceInfo",{}).get("deviceType",1))
+        if self._uses_mgpp_protocol():
+            self.topics = MgppTopics(self.user_info, self.device_info, self.client_id)
+            self.messages = MgppMessages(self.device_info, self.client_id, self.topics)
+        else:
+            self.topics = Topics(self.user_info, self.device_info, self.client_id)
+            self.messages = Messages(self.device_info, self.client_id, self.topics)
         accessKeyId = self.user_info.get("token",{}).get("accessKeyId",None)
         secretKey = self.user_info.get("token",{}).get("secretKey",None)
         sessionToken = self.user_info.get("token",{}).get("sessionToken",None)
@@ -150,7 +168,10 @@ class NavilinkConnect():
             await self.loop.run_in_executor(None,self.client.connect)
             await self._subscribe_to_topics()
             if not len(self.channels):
-                await self._get_channel_info()
+                if self._uses_mgpp_protocol():
+                    await self._get_mgpp_device_info()
+                else:
+                    await self._get_channel_info()
             await self._get_channel_status_all(wait_for_response = True)
             self.last_poll = datetime.now()
         else:
@@ -167,6 +188,9 @@ class NavilinkConnect():
             pre_poll = datetime.now()
             if not self.client_lock.locked():
                 await self._get_channel_status_all()
+                # Debug: Show channel status after polling
+                for channel_num, channel in self.channels.items():
+                    _LOGGER.debug(f"Channel {channel_num} status after polling: {channel.channel_status}")
             self.last_poll = datetime.now()
             time_delta = (self.last_poll - pre_poll).total_seconds()
         if not self.shutting_down:
@@ -200,6 +224,7 @@ class NavilinkConnect():
             self.disconnect_event.set()
 
     async def async_subscribe(self,topic,QoS=1,callback=None):
+        _LOGGER.debug("Subscribing to " + topic)
         try:
             def subscribe():
                 self.client.subscribe(topic=topic,QoS=QoS,callback=callback)
@@ -234,24 +259,78 @@ class NavilinkConnect():
 
 
     async def _subscribe_to_topics(self):
-        await self.async_subscribe(topic=self.topics.channel_info_sub(),callback=self.handle_other)
-        await self.async_subscribe(topic=self.topics.channel_info_res(),callback=self.handle_channel_info)
-        await self.async_subscribe(topic=self.topics.control_fail(),callback=self.handle_other)
-        await self.async_subscribe(topic=self.topics.channel_status_sub(),callback=self.handle_other)
-        await self.async_subscribe(topic=self.topics.channel_status_res(),callback=self.handle_channel_status)
-        await self.async_subscribe(topic=self.topics.connection(),callback=self.handle_other)
-        await self.async_subscribe(topic=self.topics.disconnect(),callback=self.handle_other)
-        if self.subscribe_all_topics:
-            await self.async_subscribe(topic=self.topics.weekly_schedule_sub(),callback=self.handle_other)
-            await self.async_subscribe(topic=self.topics.weekly_schedule_res(),callback=self.handle_weekly_schedule)
-            await self.async_subscribe(topic=self.topics.simple_trend_sub(),callback=self.handle_other)
-            await self.async_subscribe(topic=self.topics.simple_trend_res(),callback=self.handle_simple_trend)
-            await self.async_subscribe(topic=self.topics.hourly_trend_sub(),callback=self.handle_other)
-            await self.async_subscribe(topic=self.topics.hourly_trend_res(),callback=self.handle_hourly_trend)
-            await self.async_subscribe(topic=self.topics.daily_trend_sub(),callback=self.handle_other)
-            await self.async_subscribe(topic=self.topics.daily_trend_res(),callback=self.handle_daily_trend)
-            await self.async_subscribe(topic=self.topics.monthly_trend_sub(),callback=self.handle_other)
-            await self.async_subscribe(topic=self.topics.monthly_trend_res(),callback=self.handle_monthly_trend)
+        if self._uses_mgpp_protocol():
+            # MGPP protocol devices (currently NWP500 aka deviceType 52)
+            await self.async_subscribe(topic=self.topics.mgpp_default(), callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.mgpp_res_did(), callback=self.handle_mgpp_did)
+            await self.async_subscribe(topic=self.topics.mgpp_res(), callback=self.handle_mgpp_status)
+            await self.async_subscribe(topic=self.topics.mgpp_res_rsv_rd(), callback=self.handle_mgpp_rsv)
+        else:
+            await self.async_subscribe(topic=self.topics.channel_info_sub(),callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.channel_info_res(),callback=self.handle_channel_info)
+            await self.async_subscribe(topic=self.topics.control_fail(),callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.channel_status_sub(),callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.channel_status_res(),callback=self.handle_channel_status)
+            await self.async_subscribe(topic=self.topics.connection(),callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.disconnect(),callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.disconnect(),callback=self.handle_other)
+            if self.subscribe_all_topics:
+                await self.async_subscribe(topic=self.topics.weekly_schedule_sub(),callback=self.handle_other)
+                await self.async_subscribe(topic=self.topics.weekly_schedule_res(),callback=self.handle_weekly_schedule)
+                await self.async_subscribe(topic=self.topics.simple_trend_sub(),callback=self.handle_other)
+                await self.async_subscribe(topic=self.topics.simple_trend_res(),callback=self.handle_simple_trend)
+                await self.async_subscribe(topic=self.topics.hourly_trend_sub(),callback=self.handle_other)
+                await self.async_subscribe(topic=self.topics.hourly_trend_res(),callback=self.handle_hourly_trend)
+                await self.async_subscribe(topic=self.topics.daily_trend_sub(),callback=self.handle_other)
+                await self.async_subscribe(topic=self.topics.daily_trend_res(),callback=self.handle_daily_trend)
+                await self.async_subscribe(topic=self.topics.monthly_trend_sub(),callback=self.handle_other)
+                await self.async_subscribe(topic=self.topics.monthly_trend_res(),callback=self.handle_monthly_trend)
+
+    async def _get_mgpp_device_info(self):
+        """Initialize MGPP device by requesting DID and status information"""
+        _LOGGER.debug("Initializing MGPP device...")
+        
+        # Create MGPP channel first (single channel for now)
+        if len(self.channels) == 0:
+            # Create a basic channel with minimal info for MGPP
+            channel_info = {
+                "channelNumber": 1,
+                "channel": {
+                    "channelNumber": 1,
+                    "channelName": "MGPP Channel",
+                    "unitCount": 1
+                }
+            }
+            self.channels[1] = MgppChannel(1, channel_info, self)
+            _LOGGER.debug("Created MGPP channel")
+        
+        # Request device ID
+        topic = self.topics.mgpp_st_did()
+        payload = self.messages.mgpp_did()
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        
+        # Request status
+        topic = self.topics.mgpp_st()
+        payload = self.messages.mgpp_status()
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        
+        # Request RSV data
+        topic = self.topics.mgpp_st_rsv_rd()
+        payload = self.messages.mgpp_rsv_rd()
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        
+        
+        if len(self.channels) == 0:
+            raise NoChannelInformation("Unable to get MGPP device information")
 
     async def _get_channel_info(self):
         topic = self.topics.start()
@@ -264,16 +343,51 @@ class NavilinkConnect():
             raise NoChannelInformation("Unable to get channel information")
 
     async def _get_channel_status_all(self,wait_for_response=False):
-        for channel in self.channels.values():
-            topic = self.topics.channel_status_req()
-            payload = self.messages.channel_status(channel.channel_number,channel.channel_info.get("unitCount",1))
-            session_id = self.get_session_id()
-            payload["sessionID"] = session_id
-            if wait_for_response:
-                self.response_events[session_id] = asyncio.Event()
-            else:
-                session_id = ""
-            await self.async_publish(topic=topic,payload=payload,session_id=session_id)
+        _LOGGER.debug(f"Getting channel status for device type {self.device_type}, wait_for_response={wait_for_response}")
+        if self._uses_mgpp_protocol():
+            # MGPP protocol - request status and RSV data
+            _LOGGER.debug("Using MGPP protocol for status requests")
+            await self._get_mgpp_status_all(wait_for_response)
+        else:
+            # Legacy protocol
+            _LOGGER.debug("Using legacy protocol for status requests")
+            for channel in self.channels.values():
+                topic = self.topics.channel_status_req()
+                payload = self.messages.channel_status(channel.channel_number,channel.channel_info.get("unitCount",1))
+                session_id = self.get_session_id()
+                payload["sessionID"] = session_id
+                if wait_for_response:
+                    self.response_events[session_id] = asyncio.Event()
+                else:
+                    session_id = ""
+                await self.async_publish(topic=topic,payload=payload,session_id=session_id)
+
+    async def _get_mgpp_status_all(self, wait_for_response=False):
+        """Poll MGPP device for status and RSV data"""
+        _LOGGER.debug("Polling MGPP device for status...")
+        # Request status
+        topic = self.topics.mgpp_st()
+        payload = self.messages.mgpp_status()
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        _LOGGER.debug(f"Publishing status request to {topic} with session {session_id}")
+        if wait_for_response:
+            self.response_events[session_id] = asyncio.Event()
+        else:
+            session_id = ""
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        
+        # Request RSV data
+        topic = self.topics.mgpp_st_rsv_rd()
+        payload = self.messages.mgpp_rsv_rd()
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        if wait_for_response:
+            self.response_events[session_id] = asyncio.Event()
+        else:
+            session_id = ""
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        
 
     async def _get_channel_status(self,channel_number):
         channel = self.channels.get(channel_number,{})
@@ -285,6 +399,14 @@ class NavilinkConnect():
         await self.async_publish(topic=topic,payload=payload,session_id=session_id)
 
     async def _power_command(self,state,channel_number):
+        """Unified power control command that routes to appropriate protocol implementation"""
+        if self._uses_mgpp_protocol():
+            await self._mgpp_power_command(state, channel_number)
+        else:
+            await self._legacy_power_command(state, channel_number)
+
+    async def _legacy_power_command(self,state,channel_number):
+        """Legacy protocol power control command"""
         state_num = 2
         if state:
             state_num = 1
@@ -296,7 +418,22 @@ class NavilinkConnect():
         await self.async_publish(topic=topic,payload=payload,session_id=session_id)
         await self._get_channel_status(channel_number)
 
+    async def _mgpp_power_command(self, state, channel_number):
+        """MGPP power control command"""
+        if not self._uses_mgpp_protocol():
+            raise ValueError("MGPP power command only supported for MGPP protocol devices")
+        
+        topic = self.topics.mgpp_control()
+        payload = self.messages.mgpp_power(state, channel_number)
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        # Request status update after control command
+        await self._get_mgpp_status_all(wait_for_response=True)
+
     async def _hot_button_command(self,state,channel_number):
+        """Hot button control command"""
         state_num = 2
         if state:
             state_num = 1
@@ -309,6 +446,14 @@ class NavilinkConnect():
         await self._get_channel_status(channel_number)
 
     async def _temperature_command(self,temp,channel_number):
+        """Unified temperature control command that routes to appropriate protocol implementation"""
+        if self._uses_mgpp_protocol():
+            await self._mgpp_temperature_command(temp, channel_number)
+        else:
+            await self._legacy_temperature_command(temp, channel_number)
+
+    async def _legacy_temperature_command(self,temp,channel_number):
+        """Legacy protocol temperature control command"""
         topic = self.topics.control()
         payload = self.messages.temperature(temp, channel_number)
         session_id = self.get_session_id()
@@ -317,11 +462,26 @@ class NavilinkConnect():
         await self.async_publish(topic=topic,payload=payload,session_id=session_id)
         await self._get_channel_status(channel_number)
 
+    async def _mgpp_temperature_command(self, temp, channel_number):
+        """MGPP temperature control command"""
+        if not self._uses_mgpp_protocol():
+            raise ValueError("MGPP temperature command only supported for MGPP protocol devices")
+        
+        topic = self.topics.mgpp_control()
+        payload = self.messages.mgpp_temperature(temp, channel_number)
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        # Request status update after control command
+        await self._get_mgpp_status_all(wait_for_response=True)
+
     def get_session_id(self):
         return str(int(round((datetime.utcnow() - datetime(1970, 1, 1)).total_seconds()*1000)))
 
     def async_handle_channel_info(self, client, userdata, message):
         response = json.loads(message.payload)
+        print(response)
         channel_info = response.get("response",{})
         session_id = response.get("sessionID","unknown")
         self.channels = {channel.get("channelNumber",0):NavilinkChannel(channel.get("channelNumber",0),channel.get("channel",{}),self) for channel in channel_info.get("channelInfo",{}).get("channelList",[])}
@@ -357,6 +517,46 @@ class NavilinkConnect():
 
     def handle_monthly_trend(self, client, userdata, message):
         _LOGGER.info("MONTHLY TREND: " + message.payload.decode('utf-8') + '\n')
+
+    def handle_mgpp_did(self, client, userdata, message):
+        response = json.loads(message.payload)
+        _LOGGER.debug("MGPP DID Response: " + json.dumps(response, indent=2))
+        session_id = response.get("sessionID", "unknown")
+        if response_event := self.response_events.get(session_id, None):
+            response_event.set()
+        else:
+            _LOGGER.debug(f"No response event found for session ID: {session_id}")
+
+    def handle_mgpp_status(self, client, userdata, message):
+        response = json.loads(message.payload)
+        _LOGGER.debug("MGPP STATUS Response: " + json.dumps(response, indent=2))
+        session_id = response.get("sessionID", "unknown")
+        if response_event := self.response_events.get(session_id, None):
+            response_event.set()
+            _LOGGER.debug(f"Set response event for session ID: {session_id}")
+        else:
+            _LOGGER.debug(f"No response event found for session ID: {session_id}")
+        # Update channel if it exists
+        for channel in self.channels.values():
+            if hasattr(channel, 'update_channel_status'):
+                _LOGGER.debug(f"Updating channel {channel.channel_number} with status response")
+                channel.update_channel_status('status', response)
+            else:
+                _LOGGER.debug(f"Channel {channel.channel_number} does not have update_channel_status method")
+
+    def handle_mgpp_rsv(self, client, userdata, message):
+        response = json.loads(message.payload)
+        _LOGGER.debug("MGPP RSV Response: " + json.dumps(response, indent=2))
+        session_id = response.get("sessionID", "unknown")
+        if response_event := self.response_events.get(session_id, None):
+            response_event.set()
+        else:
+            _LOGGER.debug(f"No response event found for session ID: {session_id}")
+        # Update channel if it exists
+        for channel in self.channels.values():
+            if hasattr(channel, 'update_channel_status'):
+                channel.update_channel_status('rsv', response)
+
 
     def handle_other(self, client, userdata, message):
         _LOGGER.info(message.payload.decode('utf-8') + '\n')
@@ -481,6 +681,219 @@ class NavilinkChannel:
     def is_available(self):
         return self.hub.connected
 
+class MgppChannel:
+
+    def __init__(self, channel_number, channel_info, hub) -> None:
+        self.channel_number = channel_number
+        self.channel_info = channel_info
+        self.hub = hub
+        self.callbacks = []
+        self.channel_status = {}
+        self.raw_responses = {
+            'did': None,
+            'status': None,
+            'rsv': None
+        }
+        self.waiting_for_response = False
+
+    def register_callback(self,callback):
+        self.callbacks.append(callback)
+
+    def deregister_callback(self,callback):
+        if self.callbacks:
+            self.callbacks.pop(self.callbacks.index(callback))
+
+    def update_channel_status(self, response_type, response_data):
+        """Update channel status with raw response data for analysis"""
+        self.raw_responses[response_type] = response_data
+        _LOGGER.debug(f"MGPP {response_type.upper()} Response: {json.dumps(response_data, indent=2)}")
+        
+        # Parse MGPP status response into user-friendly format
+        if response_type == 'status' and 'response' in response_data:
+            status_data = response_data['response'].get('status', {})
+            self.channel_status = self._parse_mgpp_status(status_data)
+            _LOGGER.debug(f"Parsed MGPP status: {self.channel_status}")
+        elif response_type == 'status':
+            # Fallback for different response structures
+            self.channel_status = response_data
+            _LOGGER.debug(f"Stored entire response as status: {self.channel_status}")
+        
+        if not self.waiting_for_response:
+            self.publish_update()
+
+    def _parse_mgpp_status(self, status_data):
+        """Parse MGPP status data into user-friendly format"""
+        parsed_status = {}
+        
+        # Temperature information
+        parsed_status['dhwTemperature'] = status_data.get('dhwTemperature', 0)
+        parsed_status['dhwTemperatureSetting'] = status_data.get('dhwTemperatureSetting', 0)
+        parsed_status['dhwTargetTemperatureSetting'] = status_data.get('dhwTargetTemperatureSetting', 0)
+        parsed_status['tankUpperTemperature'] = status_data.get('tankUpperTemperature', 0)
+        parsed_status['tankLowerTemperature'] = status_data.get('tankLowerTemperature', 0)
+        parsed_status['dischargeTemperature'] = status_data.get('dischargeTemperature', 0)
+        parsed_status['suctionTemperature'] = status_data.get('suctionTemperature', 0)
+        parsed_status['evaporatorTemperature'] = status_data.get('evaporatorTemperature', 0)
+        parsed_status['ambientTemperature'] = status_data.get('ambientTemperature', 0)
+        
+        # Power and operational status
+        parsed_status['powerStatus'] = status_data.get('dhwUse', 0) == 1
+        parsed_status['operationMode'] = status_data.get('operationMode', 0)
+        parsed_status['operationBusy'] = status_data.get('operationBusy', 0)
+        parsed_status['currentInstPower'] = status_data.get('currentInstPower', 0)
+        parsed_status['dhwChargePer'] = status_data.get('dhwChargePer', 0)
+        
+        # Flow and capacity
+        parsed_status['currentDhwFlowRate'] = status_data.get('currentDhwFlowRate', 0)
+        parsed_status['cumulatedDhwFlowRate'] = status_data.get('cumulatedDhwFlowRate', 0)
+        parsed_status['totalEnergyCapacity'] = status_data.get('totalEnergyCapacity', 0)
+        parsed_status['availableEnergyCapacity'] = status_data.get('availableEnergyCapacity', 0)
+        
+        # Error status
+        parsed_status['errorCode'] = status_data.get('errorCode', 0)
+        parsed_status['subErrorCode'] = status_data.get('subErrorCode', 0)
+        parsed_status['faultStatus1'] = status_data.get('faultStatus1', 0)
+        parsed_status['faultStatus2'] = status_data.get('faultStatus2', 0)
+        parsed_status['hasError'] = status_data.get('errorCode', 0) != 0 or status_data.get('faultStatus1', 0) != 0 or status_data.get('faultStatus2', 0) != 0
+        
+        # System status
+        parsed_status['wifiRssi'] = status_data.get('wifiRssi', 0)
+        parsed_status['currentStatenum'] = status_data.get('currentStatenum', 0)
+        parsed_status['targetFanRpm'] = status_data.get('targetFanRpm', 0)
+        parsed_status['currentFanRpm'] = status_data.get('currentFanRpm', 0)
+        parsed_status['mixingRate'] = status_data.get('mixingRate', 0)
+        
+        # Feature flags
+        parsed_status['freezeProtectionUse'] = status_data.get('freezeProtectionUse', 0)
+        parsed_status['programReservationUse'] = status_data.get('programReservationUse', 0)
+        parsed_status['smartDiagnostic'] = status_data.get('smartDiagnostic', 0)
+        parsed_status['ecoUse'] = status_data.get('ecoUse', 0)
+        parsed_status['antiLegionellaUse'] = status_data.get('antiLegionellaUse', 0)
+        
+        # Add user-friendly status indicators
+        parsed_status['isOnline'] = not parsed_status['hasError']
+        parsed_status['isHeating'] = parsed_status['powerStatus'] and parsed_status['operationBusy'] == 1
+        parsed_status['isEcoMode'] = parsed_status['ecoUse'] == 1
+        parsed_status['isFreezeProtection'] = parsed_status['freezeProtectionUse'] == 1
+        
+        return parsed_status
+
+    def publish_update(self):
+        if len(self.callbacks) > 0:
+            [callback() for callback in self.callbacks]
+
+    async def set_power_state(self, state):
+        """Set MGPP device power state"""
+        if not self.waiting_for_response:
+            self.waiting_for_response = True
+            await self.hub._mgpp_power_command(state, self.channel_number)
+            self.publish_update()
+            self.waiting_for_response = False
+
+
+    async def set_temperature(self, temp):
+        """Set MGPP device temperature"""
+        if not self.waiting_for_response:
+            self.waiting_for_response = True
+            await self.hub._mgpp_temperature_command(temp, self.channel_number)
+            self.publish_update()
+            self.waiting_for_response = False
+
+    def get_error_message(self):
+        """Get human-readable error message if device has errors"""
+        if not self.channel_status.get('hasError', False):
+            return None
+        
+        error_code = self.channel_status.get('errorCode', 0)
+        sub_error_code = self.channel_status.get('subErrorCode', 0)
+        fault1 = self.channel_status.get('faultStatus1', 0)
+        fault2 = self.channel_status.get('faultStatus2', 0)
+        
+        if error_code != 0:
+            return f"Error Code: {error_code} (Sub: {sub_error_code})"
+        elif fault1 != 0 or fault2 != 0:
+            return f"Fault Status: {fault1}, {fault2}"
+        
+        return "Unknown error condition"
+
+    def get_status_summary(self):
+        """Get a summary of the current device status"""
+        if not self.channel_status:
+            return "No status data available"
+        
+        status_parts = []
+        
+        # Power status
+        if self.channel_status.get('powerStatus', False):
+            status_parts.append("ON")
+        else:
+            status_parts.append("OFF")
+        
+        # Temperature
+        temp = self.channel_status.get('dhwTemperature', 0)
+        target_temp = self.channel_status.get('dhwTemperatureSetting', 0)
+        status_parts.append(f"Temp: {temp}°F (Target: {target_temp}°F)")
+        
+        # Error status
+        if self.channel_status.get('hasError', False):
+            error_msg = self.get_error_message()
+            status_parts.append(f"ERROR: {error_msg}")
+        
+        # Operation mode
+        if self.channel_status.get('isHeating', False):
+            status_parts.append("HEATING")
+        
+        # Eco mode
+        if self.channel_status.get('isEcoMode', False):
+            status_parts.append("ECO MODE")
+        
+        return " | ".join(status_parts)
+
+    def is_available(self):
+        return self.hub.connected
+
+class MgppTopics:
+    def __init__(self, user_info, device_info, client_id) -> None:
+        self.user_seq = str(user_info.get("userInfo",{}).get("userSeq",""))
+        self.mac_address = device_info.get("deviceInfo",{}).get("macAddress","")
+        self.home_seq = str(device_info.get("deviceInfo",{}).get("homeSeq",""))
+        self.device_type = str(device_info.get("deviceInfo",{}).get("deviceType",""))
+        self.client_id = client_id
+        self.req = f'cmd/{self.device_type}/navilink-{self.mac_address}/'
+        self.res = f'cmd/{self.device_type}/{self.home_seq}/{self.user_seq}/{self.client_id}/res/'
+        self.mgpp = f'cmd/{self.device_type}/{self.home_seq}/{self.user_seq}/{self.client_id}/'
+
+    def mgpp_default(self):
+        return self.req + 'res'
+
+    def mgpp_res_did(self):
+        return self.mgpp + 'res/did'
+
+    def mgpp_res(self):
+        return self.mgpp + 'res'
+
+    def mgpp_res_rsv_rd(self):
+        return self.mgpp + 'res/rsv/rd'
+
+    def mgpp_st_did(self):
+        return self.req + 'st/did'
+
+    def mgpp_st(self):
+        return self.req + 'st'
+
+    def mgpp_st_rsv_rd(self):
+        return self.req + 'st/rsv/rd'
+
+    def mgpp_control(self):
+        return self.req + 'control'
+
+    def app_connection(self):
+        return f'evt/1/navilink-{self.mac_address}/app-connection'
+
+    # other mgpp endpoints:
+    # st/energy-usage-daily-query/rd
+    # st/energy-usage-monthly-query/rd
+
 class Topics:
 
     def __init__(self, user_info, device_info, client_id) -> None:
@@ -491,6 +904,23 @@ class Topics:
         self.client_id = client_id
         self.req = f'cmd/{self.device_type}/navilink-{self.mac_address}/'
         self.res = f'cmd/{self.device_type}/{self.home_seq}/{self.user_seq}/{self.client_id}/res/'
+        self.mgpp = f'cmd/{self.device_type}/{self.home_seq}/{self.user_seq}/{self.client_id}/'
+
+    def mgpp_default(self):
+        return self.req + 'res'
+
+    def mgpp_res_did(self):
+        return self.mgpp + 'res/did'
+
+    def mgpp_res(self):
+        return self.mgpp + 'res'
+
+    def mgpp_res_rsv_rd(self):
+        return self.mgpp + 'res/rsv/rd'
+
+    # other mgpp endpoints:
+    # st/energy-usage-daily-query/rd
+    # st/energy-usage-monthly-query/rd
 
     def start(self):
         return self.req + 'status/start'
@@ -569,6 +999,118 @@ class Topics:
 
     def app_connection(self):
         return f'evt/1/navilink-{self.mac_address}/app-connection'
+
+class MgppMessages:
+
+    def __init__(self, device_info, client_id, topics) -> None:
+        self.mac_address = device_info.get("deviceInfo",{}).get("macAddress","")
+        self.device_type = int(device_info.get("deviceInfo",{}).get("deviceType",1))
+        self.additional_value = device_info.get("deviceInfo",{}).get("additionalValue","")   
+        self.client_id = client_id
+        self.topics = topics
+
+    def mgpp_did(self):
+        return {
+            "clientID": self.client_id,
+            "protocolVersion": 2,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 16777217,
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address
+            },
+            "requestTopic": self.topics.mgpp_st_did(),
+            "responseTopic": self.topics.mgpp_res_did(),
+            "sessionID": ""
+        }
+
+    def mgpp_status(self):
+        return {
+            "clientID": self.client_id,
+            "protocolVersion": 2,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 16777219,
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address
+            },
+            "requestTopic": self.topics.mgpp_st(),
+            "responseTopic": self.topics.mgpp_res(),
+            "sessionID": ""
+        }
+
+    def mgpp_rsv_rd(self):
+        return {
+            "clientID": self.client_id,
+            "protocolVersion": 2,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 16777222,
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address
+            },
+            "requestTopic": self.topics.mgpp_st_rsv_rd(),
+            "responseTopic": self.topics.mgpp_res_rsv_rd(),
+            "sessionID": ""
+        }
+
+    def mgpp_power(self, state, channel_number):
+        """MGPP power control message"""
+        state_value = 1 if state else 0
+        return {
+            "clientID": self.client_id,
+            "protocolVersion": 2,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 33554433,  # Power control command
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address,
+                "control": {
+                    "channelNumber": channel_number,
+                    "mode": "power",
+                    "param": [state_value]
+                }
+            },
+            "requestTopic": self.topics.mgpp_control(),
+            "responseTopic": self.topics.mgpp_res(),
+            "sessionID": ""
+        }
+
+    def mgpp_temperature(self, temp, channel_number):
+        """MGPP temperature control message"""
+        return {
+            "clientID": self.client_id,
+            "protocolVersion": 2,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 33554435,  # Temperature control command
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address,
+                "control": {
+                    "channelNumber": channel_number,
+                    "mode": "DHWTemperature",
+                    "param": [temp]
+                }
+            },
+            "requestTopic": self.topics.mgpp_control(),
+            "responseTopic": self.topics.mgpp_res(),
+            "sessionID": ""
+        }
+
+
+    def last_will(self):
+        return {
+            "clientID": self.client_id,
+            "event": {
+                "additionalValue": self.additional_value,
+                "connection": {"os": "A", "status": 0},
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address
+            },
+            "protocolVersion": 2,
+            "requestTopic": self.topics.app_connection(),
+            "sessionID": ""
+        }
 
 class Messages:
 
