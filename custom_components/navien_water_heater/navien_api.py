@@ -299,7 +299,10 @@ class NavilinkConnect():
                     "channelNumber": 1,
                     "channelName": "MGPP Channel",
                     "unitCount": 1
-                }
+                },
+                "temperatureType": TemperatureType.FAHRENHEIT.value,
+                "setupDHWTempMin": 100,
+                "setupDHWTempMax": 140
             }
             self.channels[1] = MgppChannel(1, channel_info, self)
             _LOGGER.debug("Created MGPP channel")
@@ -685,7 +688,7 @@ class MgppChannel:
 
     def __init__(self, channel_number, channel_info, hub) -> None:
         self.channel_number = channel_number
-        self.channel_info = channel_info
+        self.channel_info = self.convert_channel_info(channel_info)
         self.hub = hub
         self.callbacks = []
         self.channel_status = {}
@@ -742,6 +745,17 @@ class MgppChannel:
         parsed_status['operationBusy'] = status_data.get('operationBusy', 0)
         parsed_status['currentInstPower'] = status_data.get('currentInstPower', 0)
         parsed_status['dhwChargePer'] = status_data.get('dhwChargePer', 0)
+        
+        # Compatibility fields for water_heater.py
+        parsed_status['DHWSettingTemp'] = status_data.get('dhwTemperatureSetting', 0)
+        
+        # Create unitInfo structure expected by water_heater.py
+        parsed_status['unitInfo'] = {
+            'unitStatusList': [{
+                'currentOutletTemp': status_data.get('dhwTemperature', 0),
+                'currentInletTemp': status_data.get('tankLowerTemperature', 0)
+            }]
+        }
         
         # Flow and capacity
         parsed_status['currentDhwFlowRate'] = status_data.get('currentDhwFlowRate', 0)
@@ -848,6 +862,25 @@ class MgppChannel:
             status_parts.append("ECO MODE")
         
         return " | ".join(status_parts)
+
+    def convert_channel_info(self, channel_info):
+        """Convert channel info to include required fields for water_heater.py compatibility"""
+        # Add default temperature type if not present (default to Fahrenheit for MGPP devices)
+        if "temperatureType" not in channel_info:
+            channel_info["temperatureType"] = TemperatureType.FAHRENHEIT.value
+        
+        # Add default temperature ranges if not present
+        if "setupDHWTempMin" not in channel_info:
+            channel_info["setupDHWTempMin"] = 100  # 100°F default minimum
+        if "setupDHWTempMax" not in channel_info:
+            channel_info["setupDHWTempMax"] = 140  # 140°F default maximum
+        
+        # Convert temperature ranges if using Celsius
+        if channel_info.get("temperatureType", TemperatureType.FAHRENHEIT.value) == TemperatureType.CELSIUS.value:
+            channel_info["setupDHWTempMin"] = round(channel_info["setupDHWTempMin"] / 2.0, 1)
+            channel_info["setupDHWTempMax"] = round(channel_info["setupDHWTempMax"] / 2.0, 1)
+        
+        return channel_info
 
     def is_available(self):
         return self.hub.connected
