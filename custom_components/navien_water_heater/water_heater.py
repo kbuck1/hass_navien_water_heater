@@ -138,9 +138,9 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
                 target_temp = round(2 * target_temp)
         else:
             if hass_units == "metric":
-                target_temp == round((target_temp*9/5) + 32)
+                target_temp = round((target_temp*9/5) + 32)
             else:
-                target_temp == round((target_temp-32)*10/9)
+                target_temp = round((target_temp-32)*10/9)
         await self.channel.set_temperature(target_temp)
 
 
