@@ -214,7 +214,11 @@ class NavilinkConnect():
     async def disconnect(self,shutting_down=True):
         if self.client and self.connected:
             self.shutting_down = shutting_down
-            await self.loop.run_in_executor(None,self.client.disconnect)
+            try:
+                await self.loop.run_in_executor(None,self.client.disconnect)
+            except Exception as e:
+                _LOGGER.warning(f"Error during disconnect: {e}")
+                # Continue with shutdown even if disconnect fails
 
     def _on_online(self):
         self.connected = True
