@@ -560,7 +560,7 @@ class NavilinkConnect():
     def handle_monthly_trend(self, client, userdata, message):
         _LOGGER.info("MONTHLY TREND: " + message.payload.decode('utf-8') + '\n')
 
-    def handle_mgpp_did(self, client, userdata, message):
+    def async_handle_mgpp_did(self, client, userdata, message):
         response = json.loads(message.payload)
         _LOGGER.debug("MGPP DID Response: " + json.dumps(response, indent=2))
         session_id = response.get("sessionID", "unknown")
@@ -578,7 +578,10 @@ class NavilinkConnect():
         else:
             _LOGGER.debug(f"No response event found for session ID: {session_id}")
 
-    def handle_mgpp_status(self, client, userdata, message):
+    def handle_mgpp_did(self, client, userdata, message):
+        self.loop.call_soon_threadsafe(self.async_handle_mgpp_did, client, userdata, message)
+
+    def async_handle_mgpp_status(self, client, userdata, message):
         response = json.loads(message.payload)
         _LOGGER.debug("MGPP STATUS Response: " + json.dumps(response, indent=2))
         session_id = response.get("sessionID", "unknown")
@@ -595,7 +598,10 @@ class NavilinkConnect():
             else:
                 _LOGGER.debug(f"Channel {channel.channel_number} does not have update_channel_status method")
 
-    def handle_mgpp_rsv(self, client, userdata, message):
+    def handle_mgpp_status(self, client, userdata, message):
+        self.loop.call_soon_threadsafe(self.async_handle_mgpp_status, client, userdata, message)
+
+    def async_handle_mgpp_rsv(self, client, userdata, message):
         response = json.loads(message.payload)
         _LOGGER.debug("MGPP RSV Response: " + json.dumps(response, indent=2))
         session_id = response.get("sessionID", "unknown")
@@ -607,6 +613,9 @@ class NavilinkConnect():
         for channel in self.channels.values():
             if hasattr(channel, 'update_channel_status'):
                 channel.update_channel_status('rsv', response)
+
+    def handle_mgpp_rsv(self, client, userdata, message):
+        self.loop.call_soon_threadsafe(self.async_handle_mgpp_rsv, client, userdata, message)
 
 
     def handle_other(self, client, userdata, message):
@@ -637,7 +646,9 @@ class NavilinkChannel:
 
     def publish_update(self):
         if len(self.callbacks) > 0:
-            [callback() for callback in self.callbacks]
+            # Schedule callbacks on the main event loop to avoid threading issues
+            for callback in self.callbacks:
+                self.hub.loop.call_soon_threadsafe(callback)
 
     async def set_power_state(self,state):
         if not self.waiting_for_response:
@@ -846,7 +857,9 @@ class MgppChannel:
 
     def publish_update(self):
         if len(self.callbacks) > 0:
-            [callback() for callback in self.callbacks]
+            # Schedule callbacks on the main event loop to avoid threading issues
+            for callback in self.callbacks:
+                self.hub.loop.call_soon_threadsafe(callback)
 
     async def set_power_state(self, state):
         """Set MGPP device power state"""
