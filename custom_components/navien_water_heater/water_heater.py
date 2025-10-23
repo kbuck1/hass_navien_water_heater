@@ -76,10 +76,7 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
     @property
     def temperature_unit(self):
         """Return temperature unit."""
-        temp_unit = UnitOfTemperature.CELSIUS
-        if self.channel.channel_info["temperatureType"] == TemperatureType.FAHRENHEIT.value:
-            temp_unit = UnitOfTemperature.FAHRENHEIT
-        return temp_unit
+        return UnitOfTemperature.CELSIUS
 
     @property
     def is_away_mode_on(self):
@@ -119,6 +116,11 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
         return self.channel.channel_status.get("DHWSettingTemp",0)
 
     @property
+    def target_temperature_step(self):
+        """Returns the step size setting for temperature."""
+        return 0.5;
+
+    @property
     def min_temp(self):
         """Return the minimum temperature."""
         return self.channel.channel_info.get("setupDHWTempMin",0)
@@ -130,18 +132,8 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
 
     async def async_set_temperature(self,**kwargs):
         """Set target water temperature"""
-        hass_units = "us_customary" if self.hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT else "metric"
-        navien_units = "us_customary" if self.channel.channel_info.get("temperatureType",2) == TemperatureType.FAHRENHEIT.value else "metric"
         target_temp = kwargs.get(ATTR_TEMPERATURE)
-        if hass_units == navien_units:
-            if self.temperature_unit == UnitOfTemperature.CELSIUS:
-                target_temp = round(2 * target_temp)
-        else:
-            if hass_units == "metric":
-                target_temp = round((target_temp*9/5) + 32)
-            else:
-                target_temp = round((target_temp-32)*10/9)
-        await self.channel.set_temperature(target_temp)
+        await self.channel.set_temperature(target_temp * 2)
 
 
     async def async_turn_away_mode_on(self):
