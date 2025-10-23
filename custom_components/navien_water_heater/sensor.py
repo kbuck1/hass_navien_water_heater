@@ -4,7 +4,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
-from .navien_api import (TemperatureType)
+from .navien_api import (TemperatureType, MgppChannel)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
@@ -100,12 +100,45 @@ async def async_setup_entry(
     navilink = hass.data[DOMAIN][entry.entry_id]
     sensors = []
     for channel in navilink.channels.values():
-        navien_units = "us_customary" if channel.channel_info.get("temperatureType",2) == TemperatureType.FAHRENHEIT.value else "metric"
-        hass_units = "us_customary" if hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT else "metric"
-        sensors.append(NavienAvgCalorieSensor(navilink, channel))
-        for unit_info in channel.channel_status.get("unitInfo",{}).get("unitStatusList",[]):
-            for sensor_type in ["gasInstantUsage","accumulatedGasUsage","DHWFlowRate","currentInletTemp","currentOutletTemp"]:
-                sensors.append(NavienSensor(hass, navilink, channel, unit_info, sensor_type, get_description(hass_units,navien_units,sensor_type)))
+        if isinstance(channel, MgppChannel):
+            # MGPP-specific sensors
+            sensors.append(MgppSensor(navilink, channel, 'dhwChargePer', 'DHW Charge',
+                                      unit=PERCENTAGE, state_class=SensorStateClass.MEASUREMENT))
+            
+            # Diagnostic sensors - disabled by default
+            sensors.extend([
+                MgppSensor(navilink, channel, 'tankUpperTemperature', 'Tank Upper Temperature',
+                          device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(navilink, channel, 'tankLowerTemperature', 'Tank Lower Temperature',
+                          device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(navilink, channel, 'dischargeTemperature', 'Discharge Temperature',
+                          device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(navilink, channel, 'suctionTemperature', 'Suction Temperature',
+                          device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(navilink, channel, 'evaporatorTemperature', 'Evaporator Temperature',
+                          device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(navilink, channel, 'ambientTemperature', 'Ambient Temperature',
+                          device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(navilink, channel, 'wifiRssi', 'WiFi Signal Strength',
+                          device_class=SensorDeviceClass.SIGNAL_STRENGTH, unit='dBm',
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(navilink, channel, 'currentInstPower', 'Current Instantaneous Power',
+                          unit=UnitOfPower.WATT, state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+            ])
+        else:
+            # Legacy sensors
+            navien_units = "us_customary" if channel.channel_info.get("temperatureType",2) == TemperatureType.FAHRENHEIT.value else "metric"
+            hass_units = "us_customary" if hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT else "metric"
+            sensors.append(NavienAvgCalorieSensor(navilink, channel))
+            for unit_info in channel.channel_status.get("unitInfo",{}).get("unitStatusList",[]):
+                for sensor_type in ["gasInstantUsage","accumulatedGasUsage","DHWFlowRate","currentInletTemp","currentOutletTemp"]:
+                    sensors.append(NavienSensor(hass, navilink, channel, unit_info, sensor_type, get_description(hass_units,navien_units,sensor_type)))
     async_add_entities(sensors)
 
 class NavienAvgCalorieSensor(SensorEntity):
@@ -249,3 +282,78 @@ class NavienSensor(SensorEntity):
     def native_value(self) -> StateType:
         """Return the value reported by the sensor."""
         return self.sensor_description.convert(self.unit_info.get(self.sensor_type,0))
+
+
+class MgppSensor(SensorEntity):
+    """Representation of an MGPP-specific sensor"""
+    
+    def __init__(self, navilink, channel, sensor_key, name, device_class=None, 
+                 unit=None, state_class=None, enabled_default=True):
+        self.navilink = navilink
+        self.channel = channel
+        self.sensor_key = sensor_key
+        self._name = name
+        self._device_class = device_class
+        self._unit = unit
+        self._state_class = state_class
+        self._enabled_default = enabled_default
+
+    async def async_added_to_hass(self) -> None:
+        """Run when this Entity has been added to HA."""
+        self.channel.register_callback(self.update_state)
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Entity being removed from hass."""
+        self.channel.deregister_callback(self.update_state)
+
+    def update_state(self):
+        self.async_write_ha_state()
+
+    @property
+    def available(self):
+        """Return if the the sensor is online or not."""
+        return self.channel.is_available()
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device registry information for this entity."""
+        return DeviceInfo(
+            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
+            manufacturer = "Navien",
+            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number),
+        )
+
+    @property
+    def name(self):
+        """Return the name of the entity."""
+        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " " + self._name + " CH" + str(self.channel.channel_number)
+
+    @property
+    def unique_id(self):
+        """Return the unique ID of the entity."""
+        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number) + self.sensor_key
+
+    @property
+    def device_class(self) -> SensorDeviceClass:
+        """Return the class of this entity."""
+        return self._device_class
+
+    @property
+    def state_class(self) -> SensorStateClass:
+        """Return the state class of this entity, if any."""
+        return self._state_class
+
+    @property
+    def native_unit_of_measurement(self):
+        """Return the unit of measurement of this entity, if any."""
+        return self._unit
+    
+    @property
+    def native_value(self) -> StateType:
+        """Return the value reported by the sensor."""
+        return self.channel.channel_status.get(self.sensor_key, 0)
+    
+    @property
+    def entity_registry_enabled_default(self):
+        """Return if the entity should be enabled by default."""
+        return self._enabled_default

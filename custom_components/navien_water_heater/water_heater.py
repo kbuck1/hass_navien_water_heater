@@ -5,6 +5,11 @@ from homeassistant.components.water_heater import (
     WaterHeaterEntity,
     WaterHeaterEntityFeature,
     STATE_GAS,
+    STATE_ECO,
+    STATE_ELECTRIC,
+    STATE_HEAT_PUMP,
+    STATE_HIGH_DEMAND,
+    STATE_OFF,
 )
 
 from homeassistant.config_entries import ConfigEntry
@@ -12,7 +17,7 @@ from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
-from .navien_api import TemperatureType
+from .navien_api import TemperatureType, MgppChannel
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,6 +45,10 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
         self.hass = hass
         self.channel = channel
         self.navilink = navilink
+    
+    def _is_mgpp_device(self):
+        """Check if this is an MGPP protocol device"""
+        return isinstance(self.channel, MgppChannel)
 
     @property
     def available(self):
@@ -75,45 +84,73 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
 
     @property
     def temperature_unit(self):
-        """Return temperature unit."""
+        """Return temperature unit - always Celsius, HA converts to user preference"""
         return UnitOfTemperature.CELSIUS
 
     @property
     def is_away_mode_on(self):
         """Return true if away mode is on."""
-        return not(self.channel.channel_status.get("powerStatus",False))
+        if self._is_mgpp_device():
+            return self.channel.channel_status.get("operationMode", 0) == 5  # VACATION
+        return not self.channel.channel_status.get("powerStatus", False)
 
     @property
     def supported_features(self):
         """Return the list of supported features."""
-        return SUPPORT_FLAGS
+        features = SUPPORT_FLAGS
+        if self._is_mgpp_device():
+            features |= WaterHeaterEntityFeature.ON_OFF
+        return features
 
     @property
     def current_operation(self):
         """Return current operation."""
-        _current_op = STATE_OFF
-        if self.channel.channel_status.get("powerStatus",False):
-            _current_op = STATE_GAS
-        return _current_op
+        if self._is_mgpp_device():
+            mode = self.channel.channel_status.get("operationMode", 6)
+            # Map MGPP mode to HA state
+            mode_map = {
+                0: STATE_OFF,  # STANDBY
+                1: STATE_HEAT_PUMP,
+                2: STATE_ELECTRIC,
+                3: STATE_ECO,
+                4: STATE_HIGH_DEMAND,
+                5: STATE_OFF,  # VACATION shown as off
+                6: STATE_OFF,  # POWER_OFF
+            }
+            return mode_map.get(mode, STATE_OFF)
+        else:
+            return STATE_GAS if self.channel.channel_status.get("powerStatus", False) else STATE_OFF
 
     @property
     def operation_list(self):
         """List of available operation modes."""
+        if self._is_mgpp_device():
+            return [STATE_HEAT_PUMP, STATE_ELECTRIC, STATE_ECO, STATE_HIGH_DEMAND, STATE_OFF]
         return [STATE_OFF, STATE_GAS]
     
     @property
     def current_temperature(self):
         """Return the current hot water temperature."""
-        unit_list = self.channel.channel_status.get("unitInfo",{}).get("unitStatusList",[])
-        if len(unit_list) > 0:
-            return round(sum([unit_info.get("currentOutletTemp") for unit_info in unit_list])/len(unit_list))
+        if self._is_mgpp_device():
+            # MGPP: temperatures are already converted to Celsius in navien_api.py
+            return self.channel.channel_status.get("dhwTemperature", 0)
         else:
-            _LOGGER.warning("No channel status information available for " + self.name)
+            # Legacy: get from unitInfo structure
+            unit_list = self.channel.channel_status.get("unitInfo",{}).get("unitStatusList",[])
+            if len(unit_list) > 0:
+                return round(sum([unit_info.get("currentOutletTemp") for unit_info in unit_list])/len(unit_list))
+            else:
+                _LOGGER.warning("No channel status information available for " + self.name)
 
     @property
     def target_temperature(self):
         """Return the temperature we try to reach."""
-        return self.channel.channel_status.get("DHWSettingTemp",0)
+        if self._is_mgpp_device():
+            # MGPP: temperatures are already converted to Celsius in navien_api.py
+            return self.channel.channel_status.get("dhwTemperatureSetting", 0)
+        else:
+            # Legacy: use DHWSettingTemp field
+            return self.channel.channel_status.get("DHWSettingTemp", 0)
 
     @property
     def target_temperature_step(self):
@@ -130,24 +167,60 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
         """Return the maximum temperature."""
         return self.channel.channel_info.get("setupDHWTempMax",0)
 
-    async def async_set_temperature(self,**kwargs):
+    async def async_set_temperature(self, **kwargs):
         """Set target water temperature"""
         target_temp = kwargs.get(ATTR_TEMPERATURE)
-        await self.channel.set_temperature(target_temp * 2)
+        if self._is_mgpp_device():
+            # MGPP: navien_api handles conversion to raw
+            await self.channel.set_temperature(target_temp)
+        else:
+            # Legacy: expects raw value (half-degree celsius)
+            await self.channel.set_temperature(target_temp * 2)
 
 
     async def async_turn_away_mode_on(self):
         """Turn away mode on."""
-        await self.channel.set_power_state(False)
+        if self._is_mgpp_device():
+            await self.channel.set_operation_mode(5)  # VACATION
+        else:
+            await self.channel.set_power_state(False)
 
     async def async_turn_away_mode_off(self):
         """Turn away mode off."""
-        await self.channel.set_power_state(True)
-
-    async def async_set_operation_mode(self,operation_mode):
-        """Set operation mode"""
-        if operation_mode == STATE_GAS:
-            power_state = True
+        if self._is_mgpp_device():
+            # Restore to heat pump mode (safest default)
+            await self.channel.set_operation_mode(1)
         else:
-            power_state = False
-        await self.channel.set_power_state(power_state)
+            await self.channel.set_power_state(True)
+
+    async def async_set_operation_mode(self, operation_mode):
+        """Set operation mode"""
+        if self._is_mgpp_device():
+            # Map HA state to MGPP mode
+            mode_map = {
+                STATE_HEAT_PUMP: 1,
+                STATE_ELECTRIC: 2,
+                STATE_ECO: 3,
+                STATE_HIGH_DEMAND: 4,
+                STATE_OFF: 6,
+            }
+            mgpp_mode = mode_map.get(operation_mode, 6)
+            await self.channel.set_operation_mode(mgpp_mode)
+        else:
+            # Legacy: only supports on/off
+            power_state = operation_mode == STATE_GAS
+            await self.channel.set_power_state(power_state)
+
+    async def async_turn_on(self):
+        """Turn the water heater on."""
+        if self._is_mgpp_device():
+            await self.channel.set_operation_mode(1)  # Heat pump mode
+        else:
+            await self.channel.set_power_state(True)
+
+    async def async_turn_off(self):
+        """Turn the water heater off."""
+        if self._is_mgpp_device():
+            await self.channel.set_operation_mode(6)  # Power off
+        else:
+            await self.channel.set_power_state(False)

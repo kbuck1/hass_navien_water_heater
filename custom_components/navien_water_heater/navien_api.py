@@ -304,7 +304,7 @@ class NavilinkConnect():
                 "setupDHWTempMin": 100,
                 "setupDHWTempMax": 140
             }
-            self.channels[1] = MgppChannel(1, channel_info, self)
+            self.channels[1] = MgppChannel(1, channel_info, self, None)
             _LOGGER.debug("Created MGPP channel")
         
         # Request device ID
@@ -479,6 +479,45 @@ class NavilinkConnect():
         # Request status update after control command
         await self._get_mgpp_status_all(wait_for_response=True)
 
+    async def _mgpp_operation_mode_command(self, mode, channel_number):
+        """MGPP operation mode control command"""
+        if not self._uses_mgpp_protocol():
+            raise ValueError("MGPP operation mode only supported for MGPP protocol devices")
+        
+        topic = self.topics.mgpp_control()
+        payload = self.messages.mgpp_operation_mode(mode, channel_number)
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        await self._get_mgpp_status_all(wait_for_response=True)
+
+    async def _mgpp_anti_legionella_command(self, state, channel_number):
+        """MGPP anti-legionella control command"""
+        if not self._uses_mgpp_protocol():
+            raise ValueError("MGPP anti-legionella only supported for MGPP protocol devices")
+        
+        topic = self.topics.mgpp_control()
+        payload = self.messages.mgpp_anti_legionella(state, channel_number)
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        await self._get_mgpp_status_all(wait_for_response=True)
+
+    async def _mgpp_freeze_protection_command(self, state, channel_number):
+        """MGPP freeze protection control command"""
+        if not self._uses_mgpp_protocol():
+            raise ValueError("MGPP freeze protection only supported for MGPP protocol devices")
+        
+        topic = self.topics.mgpp_control()
+        payload = self.messages.mgpp_freeze_protection(state, channel_number)
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        await self._get_mgpp_status_all(wait_for_response=True)
+
     def get_session_id(self):
         return str(int(round((datetime.utcnow() - datetime(1970, 1, 1)).total_seconds()*1000)))
 
@@ -525,6 +564,15 @@ class NavilinkConnect():
         response = json.loads(message.payload)
         _LOGGER.debug("MGPP DID Response: " + json.dumps(response, indent=2))
         session_id = response.get("sessionID", "unknown")
+        
+        # Store DID feature data in the channel for temperature conversion reference
+        if len(self.channels) > 0:
+            channel = list(self.channels.values())[0]
+            if hasattr(channel, 'did_features'):
+                feature_data = response.get("response", {}).get("feature", {})
+                channel.did_features = feature_data
+                _LOGGER.debug(f"Stored DID feature data: {feature_data}")
+        
         if response_event := self.response_events.get(session_id, None):
             response_event.set()
         else:
@@ -686,7 +734,7 @@ class NavilinkChannel:
 
 class MgppChannel:
 
-    def __init__(self, channel_number, channel_info, hub) -> None:
+    def __init__(self, channel_number, channel_info, hub, did_features=None) -> None:
         self.channel_number = channel_number
         self.channel_info = self.convert_channel_info(channel_info)
         self.hub = hub
@@ -697,6 +745,7 @@ class MgppChannel:
             'status': None,
             'rsv': None
         }
+        self.did_features = did_features or {}
         self.waiting_for_response = False
 
     def register_callback(self,callback):
@@ -728,16 +777,19 @@ class MgppChannel:
         """Parse MGPP status data into user-friendly format"""
         parsed_status = {}
         
-        # Temperature information
-        parsed_status['dhwTemperature'] = status_data.get('dhwTemperature', 0)
-        parsed_status['dhwTemperatureSetting'] = status_data.get('dhwTemperatureSetting', 0)
-        parsed_status['dhwTargetTemperatureSetting'] = status_data.get('dhwTargetTemperatureSetting', 0)
-        parsed_status['tankUpperTemperature'] = status_data.get('tankUpperTemperature', 0)
-        parsed_status['tankLowerTemperature'] = status_data.get('tankLowerTemperature', 0)
-        parsed_status['dischargeTemperature'] = status_data.get('dischargeTemperature', 0)
-        parsed_status['suctionTemperature'] = status_data.get('suctionTemperature', 0)
-        parsed_status['evaporatorTemperature'] = status_data.get('evaporatorTemperature', 0)
-        parsed_status['ambientTemperature'] = status_data.get('ambientTemperature', 0)
+        # Temperature information - convert from raw to Celsius
+        # Standard temperatures use half-degree Celsius encoding
+        parsed_status['dhwTemperature'] = status_data.get('dhwTemperature', 0) / 2.0
+        parsed_status['dhwTemperatureSetting'] = status_data.get('dhwTemperatureSetting', 0) / 2.0
+        parsed_status['dhwTargetTemperatureSetting'] = status_data.get('dhwTargetTemperatureSetting', 0) / 2.0
+        
+        # System temperatures likely use tenth-degree Celsius encoding
+        parsed_status['tankUpperTemperature'] = status_data.get('tankUpperTemperature', 0) / 10.0
+        parsed_status['tankLowerTemperature'] = status_data.get('tankLowerTemperature', 0) / 10.0
+        parsed_status['dischargeTemperature'] = status_data.get('dischargeTemperature', 0) / 10.0
+        parsed_status['suctionTemperature'] = status_data.get('suctionTemperature', 0) / 10.0
+        parsed_status['evaporatorTemperature'] = status_data.get('evaporatorTemperature', 0) / 10.0
+        parsed_status['ambientTemperature'] = status_data.get('ambientTemperature', 0) / 10.0
         
         # Power and operational status
         parsed_status['powerStatus'] = status_data.get('dhwUse', 0) == 1
@@ -805,11 +857,40 @@ class MgppChannel:
             self.waiting_for_response = False
 
 
-    async def set_temperature(self, temp):
+    def _celsius_to_raw(self, celsius):
+        """Convert Celsius to raw protocol value (half-degree encoding)"""
+        return int(round(celsius * 2))
+
+    async def set_temperature(self, temp_celsius):
         """Set MGPP device temperature"""
         if not self.waiting_for_response:
             self.waiting_for_response = True
-            await self.hub._mgpp_temperature_command(temp, self.channel_number)
+            raw_temp = self._celsius_to_raw(temp_celsius)
+            await self.hub._mgpp_temperature_command(raw_temp, self.channel_number)
+            self.publish_update()
+            self.waiting_for_response = False
+
+    async def set_operation_mode(self, mode):
+        """Set MGPP operation mode"""
+        if not self.waiting_for_response:
+            self.waiting_for_response = True
+            await self.hub._mgpp_operation_mode_command(mode, self.channel_number)
+            self.publish_update()
+            self.waiting_for_response = False
+
+    async def set_anti_legionella_state(self, state):
+        """Set MGPP anti-legionella state"""
+        if not self.waiting_for_response:
+            self.waiting_for_response = True
+            await self.hub._mgpp_anti_legionella_command(state, self.channel_number)
+            self.publish_update()
+            self.waiting_for_response = False
+
+    async def set_freeze_protection_state(self, state):
+        """Set MGPP freeze protection state"""
+        if not self.waiting_for_response:
+            self.waiting_for_response = True
+            await self.hub._mgpp_freeze_protection_command(state, self.channel_number)
             self.publish_update()
             self.waiting_for_response = False
 
@@ -1123,6 +1204,71 @@ class MgppMessages:
                     "channelNumber": channel_number,
                     "mode": "DHWTemperature",
                     "param": [temp]
+                }
+            },
+            "requestTopic": self.topics.mgpp_control(),
+            "responseTopic": self.topics.mgpp_res(),
+            "sessionID": ""
+        }
+
+    def mgpp_operation_mode(self, mode, channel_number):
+        """MGPP operation mode control message"""
+        return {
+            "clientID": self.client_id,
+            "protocolVersion": 2,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 33554434,  # Operation mode control command
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address,
+                "control": {
+                    "channelNumber": channel_number,
+                    "mode": "operationMode",
+                    "param": [mode]
+                }
+            },
+            "requestTopic": self.topics.mgpp_control(),
+            "responseTopic": self.topics.mgpp_res(),
+            "sessionID": ""
+        }
+
+    def mgpp_anti_legionella(self, state, channel_number):
+        """MGPP anti-legionella control message"""
+        state_value = 2 if state else 1  # MGPP uses 1=off, 2=on
+        return {
+            "clientID": self.client_id,
+            "protocolVersion": 2,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 33554436,  # Anti-legionella control command
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address,
+                "control": {
+                    "channelNumber": channel_number,
+                    "mode": "antiLegionella",
+                    "param": [state_value]
+                }
+            },
+            "requestTopic": self.topics.mgpp_control(),
+            "responseTopic": self.topics.mgpp_res(),
+            "sessionID": ""
+        }
+
+    def mgpp_freeze_protection(self, state, channel_number):
+        """MGPP freeze protection control message"""
+        state_value = 2 if state else 1  # MGPP uses 1=off, 2=on
+        return {
+            "clientID": self.client_id,
+            "protocolVersion": 2,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 33554437,  # Freeze protection control command
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address,
+                "control": {
+                    "channelNumber": channel_number,
+                    "mode": "freezeProtection",
+                    "param": [state_value]
                 }
             },
             "requestTopic": self.topics.mgpp_control(),

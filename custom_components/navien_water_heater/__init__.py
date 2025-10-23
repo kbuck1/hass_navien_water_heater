@@ -10,7 +10,7 @@ import logging
 import os
 _LOGGER=logging.getLogger(__name__)
 
-PLATFORMS: list[str] = ["water_heater","sensor","switch"]
+PLATFORMS: list[str] = ["water_heater","sensor","switch","binary_sensor"]
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Navien NaviLink Water Heater Integration from a config entry."""
