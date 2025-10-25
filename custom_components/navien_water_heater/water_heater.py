@@ -160,11 +160,15 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
     @property
     def min_temp(self):
         """Return the minimum temperature."""
+        if self._is_mgpp_device():
+            return self.channel.did_features.get("dhwTemperatureMin",0) / 2.0
         return self.channel.channel_info.get("setupDHWTempMin",0)
 
     @property
     def max_temp(self):
         """Return the maximum temperature."""
+        if self._is_mgpp_device():
+            return self.channel.did_features.get("dhwTemperatureMax",0) / 2.0
         return self.channel.channel_info.get("setupDHWTempMax",0)
 
     async def async_set_temperature(self, **kwargs):
