@@ -796,7 +796,6 @@ class MgppChannel:
         # Standard temperatures use half-degree Celsius encoding
         parsed_status['dhwTemperature'] = status_data.get('dhwTemperature', 0) / 2.0
         parsed_status['dhwTemperatureSetting'] = status_data.get('dhwTemperatureSetting', 0) / 2.0
-        parsed_status['dhwTargetTemperatureSetting'] = status_data.get('dhwTargetTemperatureSetting', 0) / 2.0
         
         # System temperatures likely use tenth-degree Celsius encoding
         parsed_status['tankUpperTemperature'] = status_data.get('tankUpperTemperature', 0) / 10.0
@@ -807,11 +806,14 @@ class MgppChannel:
         parsed_status['ambientTemperature'] = status_data.get('ambientTemperature', 0) / 10.0
         
         # Power and operational status
-        parsed_status['powerStatus'] = status_data.get('dhwUse', 0) == 1
-        parsed_status['operationMode'] = status_data.get('operationMode', 0)
+        parsed_status['powerStatus'] = status_data.get('dhwUse', 0)
+        parsed_status['dhwOperationSetting'] = status_data.get('dhwOperationSetting', 0)
         parsed_status['operationBusy'] = status_data.get('operationBusy', 0)
         parsed_status['currentInstPower'] = status_data.get('currentInstPower', 0)
         parsed_status['dhwChargePer'] = status_data.get('dhwChargePer', 0)
+        parsed_status['compUse'] = status_data.get('compUse', 0)
+        parsed_status['heatUpperUse'] = status_data.get('heatUpperUse', 0)
+        parsed_status['heatLowerUse'] = status_data.get('heatLowerUse', 0)
         
         # Compatibility fields for water_heater.py
         parsed_status['DHWSettingTemp'] = status_data.get('dhwTemperatureSetting', 0)
