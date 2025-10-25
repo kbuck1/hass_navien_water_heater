@@ -91,7 +91,7 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
     def is_away_mode_on(self):
         """Return true if away mode is on."""
         if self._is_mgpp_device():
-            return self.channel.channel_status.get("operationMode", 0) == 5  # VACATION
+            return self.channel.channel_status.get("dhwOperationSetting", 0) == 5  # VACATION
         return not self.channel.channel_status.get("powerStatus", False)
 
     @property
@@ -106,7 +106,7 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
     def current_operation(self):
         """Return current operation."""
         if self._is_mgpp_device():
-            mode = self.channel.channel_status.get("operationMode", 6)
+            mode = self.channel.channel_status.get("dhwOperationSetting", 6)
             # Map MGPP mode to HA state
             mode_map = {
                 0: STATE_OFF,  # STANDBY
