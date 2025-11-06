@@ -45,6 +45,14 @@ class NavilinkConnect():
         self.client_lock = asyncio.Lock()
         self.last_poll = None
 
+    @property
+    def is_mgpp(self) -> bool:
+        """Public flag indicating if this device uses the MGPP protocol."""
+        try:
+            return self._uses_mgpp_protocol()
+        except Exception:
+            return False
+
     def _uses_mgpp_protocol(self):
         """
         Determine if the device uses the MGPP protocol.
@@ -771,95 +779,20 @@ class MgppChannel:
             self.callbacks.pop(self.callbacks.index(callback))
 
     def update_channel_status(self, response_type, response_data):
-        """Update channel status with raw response data for analysis"""
+        """Update channel status with raw response data (no conversion here)."""
         self.raw_responses[response_type] = response_data
         _LOGGER.debug(f"MGPP {response_type.upper()} Response: {json.dumps(response_data, indent=2)}")
-        
-        # Parse MGPP status response into user-friendly format
+
+        # Store raw status dictionary as-is; conversions will be handled by entities
         if response_type == 'status' and 'response' in response_data:
             status_data = response_data['response'].get('status', {})
-            self.channel_status = self._parse_mgpp_status(status_data)
-            _LOGGER.debug(f"Parsed MGPP status: {self.channel_status}")
+            self.channel_status = status_data
         elif response_type == 'status':
-            # Fallback for different response structures
+            # Fallback for unexpected structure: keep full payload
             self.channel_status = response_data
-            _LOGGER.debug(f"Stored entire response as status: {self.channel_status}")
-        
+
         if not self.waiting_for_response:
             self.publish_update()
-
-    def _parse_mgpp_status(self, status_data):
-        """Parse MGPP status data into user-friendly format"""
-        parsed_status = {}
-        
-        # Temperature information - convert from raw to Celsius
-        # Standard temperatures use half-degree Celsius encoding
-        parsed_status['dhwTemperature'] = status_data.get('dhwTemperature', 0) / 2.0
-        parsed_status['dhwTemperatureSetting'] = status_data.get('dhwTemperatureSetting', 0) / 2.0
-        
-        # System temperatures likely use tenth-degree Celsius encoding
-        parsed_status['tankUpperTemperature'] = status_data.get('tankUpperTemperature', 0) / 10.0
-        parsed_status['tankLowerTemperature'] = status_data.get('tankLowerTemperature', 0) / 10.0
-        parsed_status['dischargeTemperature'] = status_data.get('dischargeTemperature', 0) / 10.0
-        parsed_status['suctionTemperature'] = status_data.get('suctionTemperature', 0) / 10.0
-        parsed_status['evaporatorTemperature'] = status_data.get('evaporatorTemperature', 0) / 10.0
-        parsed_status['ambientTemperature'] = status_data.get('ambientTemperature', 0) / 10.0
-        
-        # Power and operational status
-        parsed_status['powerStatus'] = status_data.get('dhwUse', 0)
-        parsed_status['dhwOperationSetting'] = status_data.get('dhwOperationSetting', 0)
-        parsed_status['operationBusy'] = status_data.get('operationBusy', 0)
-        parsed_status['currentInstPower'] = status_data.get('currentInstPower', 0)
-        parsed_status['dhwChargePer'] = status_data.get('dhwChargePer', 0)
-        parsed_status['compUse'] = status_data.get('compUse', 0)
-        parsed_status['heatUpperUse'] = status_data.get('heatUpperUse', 0)
-        parsed_status['heatLowerUse'] = status_data.get('heatLowerUse', 0)
-        
-        # Compatibility fields for water_heater.py
-        parsed_status['DHWSettingTemp'] = status_data.get('dhwTemperatureSetting', 0)
-        
-        # Create unitInfo structure expected by water_heater.py
-        parsed_status['unitInfo'] = {
-            'unitStatusList': [{
-                'currentOutletTemp': status_data.get('dhwTemperature', 0),
-                'currentInletTemp': status_data.get('tankLowerTemperature', 0)
-            }]
-        }
-        
-        # Flow and capacity
-        parsed_status['currentDhwFlowRate'] = status_data.get('currentDhwFlowRate', 0)
-        parsed_status['cumulatedDhwFlowRate'] = status_data.get('cumulatedDhwFlowRate', 0)
-        parsed_status['totalEnergyCapacity'] = status_data.get('totalEnergyCapacity', 0)
-        parsed_status['availableEnergyCapacity'] = status_data.get('availableEnergyCapacity', 0)
-        
-        # Error status
-        parsed_status['errorCode'] = status_data.get('errorCode', 0)
-        parsed_status['subErrorCode'] = status_data.get('subErrorCode', 0)
-        parsed_status['faultStatus1'] = status_data.get('faultStatus1', 0)
-        parsed_status['faultStatus2'] = status_data.get('faultStatus2', 0)
-        parsed_status['hasError'] = status_data.get('errorCode', 0) != 0 or status_data.get('faultStatus1', 0) != 0 or status_data.get('faultStatus2', 0) != 0
-        
-        # System status
-        parsed_status['wifiRssi'] = status_data.get('wifiRssi', 0)
-        parsed_status['currentStatenum'] = status_data.get('currentStatenum', 0)
-        parsed_status['targetFanRpm'] = status_data.get('targetFanRpm', 0)
-        parsed_status['currentFanRpm'] = status_data.get('currentFanRpm', 0)
-        parsed_status['mixingRate'] = status_data.get('mixingRate', 0)
-        
-        # Feature flags
-        parsed_status['freezeProtectionUse'] = status_data.get('freezeProtectionUse', 0)
-        parsed_status['programReservationUse'] = status_data.get('programReservationUse', 0)
-        parsed_status['smartDiagnostic'] = status_data.get('smartDiagnostic', 0)
-        parsed_status['ecoUse'] = status_data.get('ecoUse', 0)
-        parsed_status['antiLegionellaUse'] = status_data.get('antiLegionellaUse', 0)
-        
-        # Add user-friendly status indicators
-        parsed_status['isOnline'] = not parsed_status['hasError']
-        parsed_status['isHeating'] = parsed_status['powerStatus'] and parsed_status['operationBusy'] == 1
-        parsed_status['isEcoMode'] = parsed_status['ecoUse'] == 1
-        parsed_status['isFreezeProtection'] = parsed_status['freezeProtectionUse'] == 1
-        
-        return parsed_status
 
     def publish_update(self):
         if len(self.callbacks) > 0:

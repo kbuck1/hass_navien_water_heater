@@ -17,7 +17,7 @@ async def async_setup_entry(
     devices = []
     for channel in navilink.channels.values():
         if isinstance(channel, MgppChannel):
-            # MGPP-specific switches
+            # One set of MGPP-specific switches
             devices.append(MgppAntiLegionellaSwitchEntity(navilink, channel))
             devices.append(MgppFreezeProtectionSwitchEntity(navilink, channel))
         else:
@@ -51,10 +51,12 @@ class NavienOnDemandSwitchEntity(SwitchEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
+        mac = self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown")
         return DeviceInfo(
-            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
+            identifiers = {(DOMAIN, mac)},
             manufacturer = "Navien",
-            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number)
+            name = name
         )
 
     @property
@@ -167,12 +169,12 @@ class MgppAntiLegionellaSwitchEntity(SwitchEntity):
     @property
     def name(self):
         """Return the name of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " Anti-Legionella CH" + str(self.channel.channel_number)
+        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " Anti-Legionella"
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number) + "anti_legionella"
+        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "anti_legionella"
 
     @property
     def is_on(self):
@@ -212,21 +214,23 @@ class MgppFreezeProtectionSwitchEntity(SwitchEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
+        mac = self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown")
         return DeviceInfo(
-            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
+            identifiers = {(DOMAIN, mac)},
             manufacturer = "Navien",
-            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number)
+            name = name
         )
 
     @property
     def name(self):
         """Return the name of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " Freeze Protection CH" + str(self.channel.channel_number)
+        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " Freeze Protection"
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number) + "freeze_protection"
+        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "freeze_protection"
 
     @property
     def is_on(self):

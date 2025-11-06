@@ -21,8 +21,8 @@ async def async_setup_entry(
     navilink = hass.data[DOMAIN][entry.entry_id]
     sensors = []
     for channel in navilink.channels.values():
-        if isinstance(channel, MgppChannel):
-            # MGPP diagnostic binary sensors - disabled by default
+        if isinstance(channel, MgppChannel) and not added_mgpp:
+            # One set of MGPP diagnostic sensors - disabled by default
             sensors.extend([
                 MgppBinarySensor(navilink, channel, 'heatUpperUse', 'Upper Heating Element',
                                 device_class=BinarySensorDeviceClass.HEAT, enabled_default=False),
@@ -70,21 +70,23 @@ class MgppBinarySensor(BinarySensorEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
+        mac = self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown")
         return DeviceInfo(
-            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
+            identifiers = {(DOMAIN, mac)},
             manufacturer = "Navien",
-            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number),
+            name = name,
         )
 
     @property
     def name(self):
         """Return the name of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " " + self._name + " CH" + str(self.channel.channel_number)
+        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " " + self._name
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number) + self.sensor_key
+        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + self.sensor_key
 
     @property
     def device_class(self) -> BinarySensorDeviceClass:

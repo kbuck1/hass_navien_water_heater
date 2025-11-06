@@ -5,6 +5,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from .navien_api import (TemperatureType, MgppChannel)
+from .mgpp_utils import to_celsius_debug
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
@@ -101,7 +102,7 @@ async def async_setup_entry(
     sensors = []
     for channel in navilink.channels.values():
         if isinstance(channel, MgppChannel):
-            # MGPP-specific sensors
+            # One set of MGPP-specific sensors
             sensors.append(MgppSensor(navilink, channel, 'dhwChargePer', 'DHW Charge',
                                       unit=PERCENTAGE, state_class=SensorStateClass.MEASUREMENT))
             
@@ -317,21 +318,23 @@ class MgppSensor(SensorEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
+        mac = self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown")
         return DeviceInfo(
-            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
+            identifiers = {(DOMAIN, mac)},
             manufacturer = "Navien",
-            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number),
+            name = name,
         )
 
     @property
     def name(self):
         """Return the name of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " " + self._name + " CH" + str(self.channel.channel_number)
+        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " " + self._name
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number) + self.sensor_key
+        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + self.sensor_key
 
     @property
     def device_class(self) -> SensorDeviceClass:
@@ -351,7 +354,14 @@ class MgppSensor(SensorEntity):
     @property
     def native_value(self) -> StateType:
         """Return the value reported by the sensor."""
-        return self.channel.channel_status.get(self.sensor_key, 0)
+        raw_value = self.channel.channel_status.get(self.sensor_key, 0)
+        
+        # Apply temperature conversion for diagnostic temperature sensors
+        if self._device_class == SensorDeviceClass.TEMPERATURE:
+            return to_celsius_debug(raw_value)
+        
+        # Return raw value for non-temperature sensors
+        return raw_value
     
     @property
     def entity_registry_enabled_default(self):
