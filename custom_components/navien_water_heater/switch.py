@@ -161,9 +161,9 @@ class MgppAntiLegionellaSwitchEntity(SwitchEntity):
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
         return DeviceInfo(
-            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
+            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown"))},
             manufacturer = "Navien",
-            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number)
+            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown")
         )
 
     @property
