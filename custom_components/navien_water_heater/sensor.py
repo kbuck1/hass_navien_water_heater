@@ -100,7 +100,8 @@ async def async_setup_entry(
 
     navilink = hass.data[DOMAIN][entry.entry_id]
     sensors = []
-    for channel in navilink.channels.values():
+    for device_key, channel in navilink.devices.items():
+        mac_address, channel_number = device_key
         if isinstance(channel, MgppChannel):
             # One set of MGPP-specific sensors
             sensors.append(MgppSensor(navilink, channel, 'dhwChargePer', 'DHW Charge',
@@ -169,21 +170,24 @@ class NavienAvgCalorieSensor(SensorEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
+        mac = self.channel.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        name = self.channel.device_info.get("deviceInfo",{}).get("deviceName","unknown")
         return DeviceInfo(
-            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
+            identifiers = {(DOMAIN, mac + "_" + str(self.channel.channel_number))},
             manufacturer = "Navien",
-            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number),
+            name = name,
         )
 
     @property
     def name(self):
         """Return the name of the entity."""
-        return "CH" + str(self.channel.channel_number) + " Heating Power"
+        return "Heating Power"
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number) + "avgCalorie"
+        mac = self.channel.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        return mac + "_" + str(self.channel.channel_number) + "_avgCalorie"
 
     @property
     def device_class(self) -> SensorDeviceClass:
@@ -244,24 +248,27 @@ class NavienSensor(SensorEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
+        mac = self.channel.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        name = self.channel.device_info.get("deviceInfo",{}).get("deviceName","unknown")
         return DeviceInfo(
-            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
+            identifiers = {(DOMAIN, mac + "_" + str(self.channel.channel_number))},
             manufacturer = "Navien",
-            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number),
+            name = name,
         )
 
     @property
     def name(self):
         """Return the name of the entity."""
         if unit_number := self.unit_info.get("unitNumber", None):
-            return "CH" + str(self.channel.channel_number) + "_UNIT" + str(unit_number) + " " + self.sensor_description.name
+            return "UNIT" + str(unit_number) + " " + self.sensor_description.name
         else:
-            return "CH" + str(self.channel.channel_number) + " " + self.sensor_description.name
+            return self.sensor_description.name
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number) + str(self.unit_info.get("unitNumber","")) + self.sensor_type
+        mac = self.channel.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        return mac + "_" + str(self.channel.channel_number) + "_" + str(self.unit_info.get("unitNumber","")) + "_" + self.sensor_type
 
     @property
     def device_class(self) -> SensorDeviceClass:
@@ -318,10 +325,10 @@ class MgppSensor(SensorEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
-        mac = self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown")
-        name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown")
+        mac = self.channel.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        name = self.channel.device_info.get("deviceInfo",{}).get("deviceName","unknown")
         return DeviceInfo(
-            identifiers = {(DOMAIN, mac)},
+            identifiers = {(DOMAIN, mac + "_" + str(self.channel.channel_number))},
             manufacturer = "Navien",
             name = name,
         )
@@ -329,12 +336,13 @@ class MgppSensor(SensorEntity):
     @property
     def name(self):
         """Return the name of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " " + self._name
+        return self.channel.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " " + self._name
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + self.sensor_key
+        mac = self.channel.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        return mac + "_" + str(self.channel.channel_number) + "_" + self.sensor_key
 
     @property
     def device_class(self) -> SensorDeviceClass:

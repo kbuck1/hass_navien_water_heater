@@ -30,7 +30,15 @@ async def async_setup_entry(
     navilink = hass.data[DOMAIN][entry.entry_id]
     # Delegate to MGPP-specific implementation when appropriate
     try:
-        if getattr(navilink, "is_mgpp", False):
+        # Check if any device is MGPP
+        has_mgpp = False
+        for device_key, device in navilink.devices.items():
+            mac_address = device_key[0]
+            if navilink.is_mgpp_device(mac_address):
+                has_mgpp = True
+                break
+        
+        if has_mgpp:
             from .water_heater_mgpp import async_setup_entry_mgpp
             await async_setup_entry_mgpp(hass, entry, async_add_entities)
             return
@@ -38,8 +46,11 @@ async def async_setup_entry(
         pass
 
     devices = []
-    for channel in navilink.channels.values():
-        devices.append(NavienWaterHeaterEntity(hass, channel, navilink))
+    for device_key, channel in navilink.devices.items():
+        mac_address, channel_number = device_key
+        # Only add legacy protocol devices here (MGPP handled above)
+        if not navilink.is_mgpp_device(mac_address):
+            devices.append(NavienWaterHeaterEntity(hass, channel, navilink))
     async_add_entities(devices)
 
 
@@ -59,21 +70,24 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
+        mac = self.channel.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        name = self.channel.device_info.get("deviceInfo",{}).get("deviceName","unknown")
         return DeviceInfo(
-            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
+            identifiers = {(DOMAIN, mac + "_" + str(self.channel.channel_number))},
             manufacturer = "Navien",
-            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number),
+            name = name,
         )
 
     @property
     def name(self):
         """Return the name of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " CH" + str(self.channel.channel_number)
+        return self.channel.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN")
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number)
+        mac = self.channel.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        return mac + "_wh_" + str(self.channel.channel_number)
 
     async def async_added_to_hass(self) -> None:
         """Run when this Entity has been added to HA."""

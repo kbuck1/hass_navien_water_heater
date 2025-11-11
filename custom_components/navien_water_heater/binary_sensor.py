@@ -20,7 +20,8 @@ async def async_setup_entry(
     """Set up Navien binary sensors based on a config entry."""
     navilink = hass.data[DOMAIN][entry.entry_id]
     sensors = []
-    for channel in navilink.channels.values():
+    for device_key, channel in navilink.devices.items():
+        mac_address, channel_number = device_key
         if isinstance(channel, MgppChannel):
             # One set of MGPP diagnostic sensors - disabled by default
             sensors.extend([
@@ -70,10 +71,10 @@ class MgppBinarySensor(BinarySensorEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return device registry information for this entity."""
-        mac = self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown")
-        name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown")
+        mac = self.channel.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        name = self.channel.device_info.get("deviceInfo",{}).get("deviceName","unknown")
         return DeviceInfo(
-            identifiers = {(DOMAIN, mac)},
+            identifiers = {(DOMAIN, mac + "_" + str(self.channel.channel_number))},
             manufacturer = "Navien",
             name = name,
         )
@@ -81,12 +82,13 @@ class MgppBinarySensor(BinarySensorEntity):
     @property
     def name(self):
         """Return the name of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " " + self._name
+        return self.channel.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " " + self._name
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + self.sensor_key
+        mac = self.channel.device_info.get("deviceInfo",{}).get("macAddress","unknown")
+        return mac + "_" + str(self.channel.channel_number) + "_" + self.sensor_key
 
     @property
     def device_class(self) -> BinarySensorDeviceClass:

@@ -29,18 +29,18 @@ async def async_setup_entry_mgpp(
     """Set up MGPP Navien water heater based on a config entry."""
     navilink = hass.data[DOMAIN][entry.entry_id]
 
-    # Expect exactly one MGPP channel; pick the first one defensively
-    mgpp_channel = None
-    for channel in navilink.channels.values():
-        if isinstance(channel, MgppChannel):
-            mgpp_channel = channel
-            break
+    # Find MGPP channels
+    mgpp_channels = []
+    for device_key, channel in navilink.devices.items():
+        mac_address, channel_number = device_key
+        if isinstance(channel, MgppChannel) and navilink.is_mgpp_device(mac_address):
+            mgpp_channels.append(channel)
 
-    if mgpp_channel is None:
+    if not mgpp_channels:
         _LOGGER.warning("No MGPP channel found during MGPP water heater setup")
         return
 
-    async_add_entities([NavienWaterHeaterMgppEntity(hass, mgpp_channel, navilink)])
+    async_add_entities([NavienWaterHeaterMgppEntity(hass, channel, navilink) for channel in mgpp_channels])
 
 
 class NavienWaterHeaterMgppEntity(WaterHeaterEntity):
@@ -63,22 +63,22 @@ class NavienWaterHeaterMgppEntity(WaterHeaterEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        mac = self.navilink.device_info.get("deviceInfo", {}).get("macAddress", "unknown")
-        name = self.navilink.device_info.get("deviceInfo", {}).get("deviceName", "unknown")
+        mac = self.channel.device_info.get("deviceInfo", {}).get("macAddress", "unknown")
+        name = self.channel.device_info.get("deviceInfo", {}).get("deviceName", "unknown")
         return DeviceInfo(
-            identifiers={(DOMAIN, mac)},
+            identifiers={(DOMAIN, mac + "_" + str(self.channel.channel_number))},
             manufacturer="Navien",
             name=name,
         )
 
     @property
     def name(self):
-        return self.navilink.device_info.get("deviceInfo", {}).get("deviceName", "UNKNOWN")
+        return self.channel.device_info.get("deviceInfo", {}).get("deviceName", "UNKNOWN")
 
     @property
     def unique_id(self):
-        mac = self.navilink.device_info.get("deviceInfo", {}).get("macAddress", "unknown")
-        return f"{mac}_wh"
+        mac = self.channel.device_info.get("deviceInfo", {}).get("macAddress", "unknown")
+        return f"{mac}_wh_{self.channel.channel_number}"
 
     @property
     def temperature_unit(self):

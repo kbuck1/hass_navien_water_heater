@@ -20,9 +20,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     subdirs = ['custom_components','navien_water_heater','cert']
     for subdir in subdirs:
         aws_path = os.path.join(aws_path,subdir)
-    navilink = NavilinkConnect(userId=entry.data.get("username",""), passwd=entry.data.get("password",""), polling_interval=entry.data.get("polling_interval",15), device_index=entry.data.get("device_index",0), aws_cert_path=os.path.join(aws_path,"AmazonRootCA1.pem"))
+    navilink = NavilinkConnect(userId=entry.data.get("username",""), passwd=entry.data.get("password",""), polling_interval=entry.data.get("polling_interval",15), aws_cert_path=os.path.join(aws_path,"AmazonRootCA1.pem"))
     hass.data[DOMAIN][entry.entry_id] = navilink
-    await navilink.start()    
+    
+    # Discover all devices
+    device_list = await navilink.start()
+    
+    # For now, monitor all discovered devices
+    # In the future, this could be configurable via config entry options
+    mac_addresses = []
+    for device_info in device_list:
+        mac = device_info.get("deviceInfo",{}).get("macAddress","")
+        if mac:
+            mac_addresses.append(mac)
+    
+    if not mac_addresses:
+        _LOGGER.error("No devices found to monitor")
+        return False
+    
+    # Connect to MQTT and subscribe to devices
+    await navilink.connect_and_subscribe_devices(mac_addresses)
+    
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
