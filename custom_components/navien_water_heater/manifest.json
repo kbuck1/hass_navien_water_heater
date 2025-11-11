@@ -1,6 +1,6 @@
 {
-  "domain": "navien_water_heater",
-  "name": "Navien NaviLink Water Heater Integration",
+  "domain": "navien",
+  "name": "Navien",
   "version": "1.0.1",
   "config_flow": true,
   "documentation": "https://www.github.com/nikshriv/hass_navien_water_heater",
