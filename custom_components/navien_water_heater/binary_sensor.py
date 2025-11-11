@@ -21,7 +21,7 @@ async def async_setup_entry(
     navilink = hass.data[DOMAIN][entry.entry_id]
     sensors = []
     for channel in navilink.channels.values():
-        if isinstance(channel, MgppChannel) and not added_mgpp:
+        if isinstance(channel, MgppChannel):
             # One set of MGPP diagnostic sensors - disabled by default
             sensors.extend([
                 MgppBinarySensor(navilink, channel, 'heatUpperUse', 'Upper Heating Element',
