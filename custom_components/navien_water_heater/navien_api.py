@@ -277,6 +277,13 @@ class NavilinkConnect():
             await self.async_subscribe(topic=self.topics.mgpp_res_did(), callback=self.handle_mgpp_did)
             await self.async_subscribe(topic=self.topics.mgpp_res(), callback=self.handle_mgpp_status)
             await self.async_subscribe(topic=self.topics.mgpp_res_rsv_rd(), callback=self.handle_mgpp_rsv)
+            # Subscribe to control failure notifications per spec
+            await self.async_subscribe(topic=self.topics.mgpp_ctrl_fail(), callback=self.handle_mgpp_ctrl_fail)
+            # Subscribe to connection event topics per spec
+            await self.async_subscribe(topic=self.topics.app_connection(), callback=self.handle_mgpp_connection)
+            await self.async_subscribe(topic=self.topics.mgpp_connection(), callback=self.handle_mgpp_connection)
+            # Subscribe to disconnect broadcast per spec
+            await self.async_subscribe(topic=self.topics.mgpp_disconnect(), callback=self.handle_mgpp_disconnect)
         else:
             await self.async_subscribe(topic=self.topics.channel_info_sub(),callback=self.handle_other)
             await self.async_subscribe(topic=self.topics.channel_info_res(),callback=self.handle_channel_info)
@@ -629,6 +636,41 @@ class NavilinkConnect():
     def handle_mgpp_rsv(self, client, userdata, message):
         self.loop.call_soon_threadsafe(self.async_handle_mgpp_rsv, client, userdata, message)
 
+    def async_handle_mgpp_ctrl_fail(self, client, userdata, message):
+        """Handle MGPP control failure notifications per spec"""
+        response = json.loads(message.payload)
+        _LOGGER.warning("MGPP Control Failure: " + json.dumps(response, indent=2))
+        fail_code = response.get("response", {}).get("failCode", 0)
+        if fail_code == 2:
+            _LOGGER.error("Control interval exceeded - command rejected by platform")
+        else:
+            _LOGGER.warning(f"Control failure with code: {fail_code}")
+
+    def handle_mgpp_ctrl_fail(self, client, userdata, message):
+        self.loop.call_soon_threadsafe(self.async_handle_mgpp_ctrl_fail, client, userdata, message)
+
+    def async_handle_mgpp_connection(self, client, userdata, message):
+        """Handle MGPP connection heartbeat events per spec"""
+        response = json.loads(message.payload)
+        _LOGGER.debug("MGPP Connection Event: " + json.dumps(response, indent=2))
+        # Check if status indicates disconnect (status <= 0)
+        event_data = response.get("event", {})
+        connection = event_data.get("connection", {})
+        status = connection.get("status", 0)
+        if status <= 0:
+            _LOGGER.warning("Device connection status indicates disconnect (status <= 0)")
+            # Could trigger disconnect handling here if needed
+
+    def handle_mgpp_connection(self, client, userdata, message):
+        self.loop.call_soon_threadsafe(self.async_handle_mgpp_connection, client, userdata, message)
+
+    def async_handle_mgpp_disconnect(self, client, userdata, message):
+        """Handle MGPP disconnect broadcast per spec"""
+        _LOGGER.warning("MGPP Disconnect Broadcast received - device MQTT session dropped")
+        # The spec indicates receipt alone triggers action - could force reconnection here
+
+    def handle_mgpp_disconnect(self, client, userdata, message):
+        self.loop.call_soon_threadsafe(self.async_handle_mgpp_disconnect, client, userdata, message)
 
     def handle_other(self, client, userdata, message):
         _LOGGER.info(message.payload.decode('utf-8') + '\n')
@@ -951,10 +993,23 @@ class MgppTopics:
         return self.req + 'st/rsv/rd'
 
     def mgpp_control(self):
-        return self.req + 'control'
+        """MGPP control topic - uses ctrl endpoint per spec"""
+        return self.req + 'ctrl'
+
+    def mgpp_ctrl_fail(self):
+        """MGPP control failure topic per spec"""
+        return self.req + 'ctrl-fail'
+
+    def mgpp_connection(self):
+        """MGPP device connection event topic per spec (legacy fallback)"""
+        return f'evt/{self.device_type}/navilink-{self.mac_address}/connection'
+
+    def mgpp_disconnect(self):
+        """MGPP disconnect broadcast topic per spec"""
+        return 'evt/+/mobile/event/disconnect-mqtt'
 
     def app_connection(self):
-        return f'evt/1/navilink-{self.mac_address}/app-connection'
+        return f'evt/{self.device_type}/navilink-{self.mac_address}/app-connection'
 
     # other mgpp endpoints:
     # st/energy-usage-daily-query/rd
@@ -1121,21 +1176,21 @@ class MgppMessages:
         }
 
     def mgpp_power(self, state, channel_number):
-        """MGPP power control message"""
-        state_value = 1 if state else 0
+        """MGPP power control message - uses RequestMgppControl structure per spec"""
+        # POWER_OFF = 33554433, POWER_ON = 33554434 per spec
+        command_id = 33554434 if state else 33554433
+        mode_str = "power-on" if state else "power-off"
         return {
             "clientID": self.client_id,
             "protocolVersion": 2,
             "request": {
                 "additionalValue": self.additional_value,
-                "command": 33554433,  # Power control command
+                "command": command_id,
                 "deviceType": self.device_type,
                 "macAddress": self.mac_address,
-                "control": {
-                    "channelNumber": channel_number,
-                    "mode": "power",
-                    "param": [state_value]
-                }
+                "mode": mode_str,
+                "param": [],
+                "paramStr": ""
             },
             "requestTopic": self.topics.mgpp_control(),
             "responseTopic": self.topics.mgpp_res(),
@@ -1143,20 +1198,20 @@ class MgppMessages:
         }
 
     def mgpp_temperature(self, temp, channel_number):
-        """MGPP temperature control message"""
+        """MGPP temperature control message - uses RequestMgppControl structure per spec"""
+        # DHW_TEMPERATURE = 33554464 per spec
+        # temp is already encoded (half-degree Celsius: celsius * 2)
         return {
             "clientID": self.client_id,
             "protocolVersion": 2,
             "request": {
                 "additionalValue": self.additional_value,
-                "command": 33554435,  # Temperature control command
+                "command": 33554464,  # DHW_TEMPERATURE per spec
                 "deviceType": self.device_type,
                 "macAddress": self.mac_address,
-                "control": {
-                    "channelNumber": channel_number,
-                    "mode": "DHWTemperature",
-                    "param": [temp]
-                }
+                "mode": "dhw-temperature",
+                "param": [temp],
+                "paramStr": ""
             },
             "requestTopic": self.topics.mgpp_control(),
             "responseTopic": self.topics.mgpp_res(),
@@ -1164,20 +1219,24 @@ class MgppMessages:
         }
 
     def mgpp_operation_mode(self, mode, channel_number):
-        """MGPP operation mode control message"""
+        """MGPP operation mode control message - uses RequestMgppControl structure per spec"""
+        # DHW_OPERATION_MODE = 33554437 per spec
+        # If mode is VACATION (5), include days parameter
+        param = [mode]
+        if mode == 5:  # VACATION mode requires days parameter
+            # Default to 7 days if not specified
+            param = [mode, 7]
         return {
             "clientID": self.client_id,
             "protocolVersion": 2,
             "request": {
                 "additionalValue": self.additional_value,
-                "command": 33554434,  # Operation mode control command
+                "command": 33554437,  # DHW_OPERATION_MODE per spec
                 "deviceType": self.device_type,
                 "macAddress": self.mac_address,
-                "control": {
-                    "channelNumber": channel_number,
-                    "mode": "operationMode",
-                    "param": [mode]
-                }
+                "mode": "dhw-mode",
+                "param": param,
+                "paramStr": ""
             },
             "requestTopic": self.topics.mgpp_control(),
             "responseTopic": self.topics.mgpp_res(),
@@ -1185,21 +1244,23 @@ class MgppMessages:
         }
 
     def mgpp_anti_legionella(self, state, channel_number):
-        """MGPP anti-legionella control message"""
-        state_value = 2 if state else 1  # MGPP uses 1=off, 2=on
+        """MGPP anti-legionella control message - uses RequestMgppControl structure per spec"""
+        # ANTI_LEGIONELLA_OFF = 33554471, ANTI_LEGIONELLA_ON = 33554472 per spec
+        command_id = 33554472 if state else 33554471
+        mode_str = "anti-leg-on" if state else "anti-leg-off"
+        # If enabling, include period parameter (default 7 days)
+        param = [7] if state else []
         return {
             "clientID": self.client_id,
             "protocolVersion": 2,
             "request": {
                 "additionalValue": self.additional_value,
-                "command": 33554436,  # Anti-legionella control command
+                "command": command_id,
                 "deviceType": self.device_type,
                 "macAddress": self.mac_address,
-                "control": {
-                    "channelNumber": channel_number,
-                    "mode": "antiLegionella",
-                    "param": [state_value]
-                }
+                "mode": mode_str,
+                "param": param,
+                "paramStr": ""
             },
             "requestTopic": self.topics.mgpp_control(),
             "responseTopic": self.topics.mgpp_res(),
@@ -1207,21 +1268,23 @@ class MgppMessages:
         }
 
     def mgpp_freeze_protection(self, state, channel_number):
-        """MGPP freeze protection control message"""
+        """MGPP freeze protection control message - uses RequestMgppControl structure per spec"""
+        # Note: FREZ_TEMP = 33554451 per spec, but no handler defined in app
+        # This may need to be implemented differently - using a generic control structure
+        # For now, using a placeholder command ID as freeze protection control isn't fully documented
+        # The spec shows FREZ_TEMP exists but has no handler
         state_value = 2 if state else 1  # MGPP uses 1=off, 2=on
         return {
             "clientID": self.client_id,
             "protocolVersion": 2,
             "request": {
                 "additionalValue": self.additional_value,
-                "command": 33554437,  # Freeze protection control command
+                "command": 33554451,  # FREZ_TEMP per spec (though no handler in app)
                 "deviceType": self.device_type,
                 "macAddress": self.mac_address,
-                "control": {
-                    "channelNumber": channel_number,
-                    "mode": "freezeProtection",
-                    "param": [state_value]
-                }
+                "mode": "freeze-protection",
+                "param": [],
+                "paramStr": ""
             },
             "requestTopic": self.topics.mgpp_control(),
             "responseTopic": self.topics.mgpp_res(),
@@ -1230,6 +1293,7 @@ class MgppMessages:
 
 
     def last_will(self):
+        """Last Will message - uses protocolVersion 1 per spec"""
         return {
             "clientID": self.client_id,
             "event": {
@@ -1238,7 +1302,7 @@ class MgppMessages:
                 "deviceType": self.device_type,
                 "macAddress": self.mac_address
             },
-            "protocolVersion": 2,
+            "protocolVersion": 1,  # Last Will uses protocolVersion 1 per spec
             "requestTopic": self.topics.app_connection(),
             "sessionID": ""
         }
