@@ -498,13 +498,19 @@ class NavilinkConnect():
         # Request status update after control command
         await self._get_mgpp_status_all(wait_for_response=True)
 
-    async def _mgpp_operation_mode_command(self, mode, channel_number):
-        """MGPP operation mode control command"""
+    async def _mgpp_operation_mode_command(self, mode, channel_number, days=None):
+        """MGPP operation mode control command
+        
+        Args:
+            mode: Operation mode (5 for vacation mode)
+            channel_number: Channel number
+            days: Optional days parameter for vacation mode. If None and mode is 5, defaults to 7
+        """
         if not self._uses_mgpp_protocol():
             raise ValueError("MGPP operation mode only supported for MGPP protocol devices")
         
         topic = self.topics.mgpp_control()
-        payload = self.messages.mgpp_operation_mode(mode, channel_number)
+        payload = self.messages.mgpp_operation_mode(mode, channel_number, days)
         session_id = self.get_session_id()
         payload["sessionID"] = session_id
         self.response_events[session_id] = asyncio.Event()
@@ -812,6 +818,7 @@ class MgppChannel:
         }
         self.did_features = did_features or {}
         self.waiting_for_response = False
+        self.vacation_days = 7  # Default vacation mode duration in days
 
     def register_callback(self,callback):
         self.callbacks.append(callback)
@@ -864,11 +871,18 @@ class MgppChannel:
             self.publish_update()
             self.waiting_for_response = False
 
-    async def set_operation_mode(self, mode):
-        """Set MGPP operation mode"""
+    async def set_operation_mode(self, mode, days=None):
+        """Set MGPP operation mode
+        
+        Args:
+            mode: Operation mode (5 for vacation mode)
+            days: Optional days parameter for vacation mode. If None, uses self.vacation_days
+        """
         if not self.waiting_for_response:
             self.waiting_for_response = True
-            await self.hub._mgpp_operation_mode_command(mode, self.channel_number)
+            # Use provided days or fall back to channel's stored value
+            vacation_days = days if days is not None else self.vacation_days
+            await self.hub._mgpp_operation_mode_command(mode, self.channel_number, vacation_days)
             self.publish_update()
             self.waiting_for_response = False
 
@@ -1218,14 +1232,21 @@ class MgppMessages:
             "sessionID": ""
         }
 
-    def mgpp_operation_mode(self, mode, channel_number):
-        """MGPP operation mode control message - uses RequestMgppControl structure per spec"""
+    def mgpp_operation_mode(self, mode, channel_number, days=None):
+        """MGPP operation mode control message - uses RequestMgppControl structure per spec
+        
+        Args:
+            mode: Operation mode (5 for vacation mode)
+            channel_number: Channel number (unused but kept for API consistency)
+            days: Optional days parameter for vacation mode. If None and mode is 5, defaults to 7
+        """
         # DHW_OPERATION_MODE = 33554437 per spec
         # If mode is VACATION (5), include days parameter
         param = [mode]
         if mode == 5:  # VACATION mode requires days parameter
-            # Default to 7 days if not specified
-            param = [mode, 7]
+            # Use provided days or default to 7 days
+            vacation_days = days if days is not None else 7
+            param = [mode, vacation_days]
         return {
             "clientID": self.client_id,
             "protocolVersion": 2,

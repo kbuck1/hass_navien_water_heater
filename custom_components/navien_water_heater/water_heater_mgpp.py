@@ -144,7 +144,7 @@ class NavienWaterHeaterMgppEntity(WaterHeaterEntity):
         await self.channel.set_temperature(target_c)
 
     async def async_turn_away_mode_on(self):
-        # Vacation
+        # Vacation - use the vacation_days value from the channel
         await self.channel.set_operation_mode(5)
 
     async def async_turn_away_mode_off(self):
