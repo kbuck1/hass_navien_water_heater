@@ -38,10 +38,12 @@ class NavienVacationModeDurationNumberEntity(NumberEntity):
         """Run when this Entity has been added to HA."""
         # Try to restore the value from channel status if available
         vacation_days = self.channel.channel_status.get("vacationDaySetting")
-        if vacation_days is not None:
+        if vacation_days is not None and vacation_days > 0:
             self._value = int(vacation_days)
             self.channel.vacation_days = int(vacation_days)
         else:
+            # Ensure default is 7 if no valid value from device
+            self._value = 7
             # Initialize channel's vacation_days with our default value
             self.channel.vacation_days = self._value
 
@@ -96,6 +98,11 @@ class NavienVacationModeDurationNumberEntity(NumberEntity):
     def native_unit_of_measurement(self) -> str:
         """Return the unit of measurement."""
         return "days"
+
+    @property
+    def mode(self) -> str:
+        """Return the display mode."""
+        return "box"
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the value."""
