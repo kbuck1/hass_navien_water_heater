@@ -152,19 +152,23 @@ class NavienWaterHeaterMgppEntity(WaterHeaterEntity):
         await self.channel.set_operation_mode(1)
 
     async def async_set_operation_mode(self, operation_mode):
+        # STATE_OFF should use power command, not operation mode
+        if operation_mode == STATE_OFF:
+            await self.channel.set_power_state(False)
+            return
+        
         mode_map = {
             STATE_HEAT_PUMP: 1,
             STATE_ELECTRIC: 2,
             STATE_ECO: 3,
             STATE_HIGH_DEMAND: 4,
-            STATE_OFF: 6,
         }
-        await self.channel.set_operation_mode(mode_map.get(operation_mode, 6))
+        await self.channel.set_operation_mode(mode_map.get(operation_mode, 1))
 
     async def async_turn_on(self):
-        await self.channel.set_operation_mode(1)
+        await self.channel.set_power_state(True)
 
     async def async_turn_off(self):
-        await self.channel.set_operation_mode(6)
+        await self.channel.set_power_state(False)
 
 
