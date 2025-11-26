@@ -14,6 +14,10 @@ class NavilinkConnect():
     # The Navien server.
     navienWebServer = "https://nlus.naviensmartcontrol.com/api/v2"
 
+    # Connection health thresholds
+    MAX_CONSECUTIVE_FAILURES = 3  # Number of failed polls before triggering reconnection
+    STALENESS_TIMEOUT_MULTIPLIER = 4  # Consider stale if no data for polling_interval * this value
+
     def __init__(self, userId, passwd, device_index = 0, polling_interval = 15, aws_cert_path = "AmazonRootCA1.pem", subscribe_all_topics=False):
         """
         Construct a new 'NavilinkConnect' object.
@@ -44,6 +48,9 @@ class NavilinkConnect():
         self.response_events = {}
         self.client_lock = asyncio.Lock()
         self.last_poll = None
+        # Connection health tracking
+        self.last_data_received = None  # Timestamp of last successful data receipt
+        self.consecutive_poll_failures = 0  # Counter for failed poll responses
 
     @property
     def is_mgpp(self) -> bool:
@@ -90,7 +97,6 @@ class NavilinkConnect():
             tasks = [
                 asyncio.create_task(self._poll_mqtt_server(), name = "Poll MQTT Server"),
                 asyncio.create_task(self._server_connection_lost(), name = "Connection Lost Event"),
-                asyncio.create_task(self._refresh_connection(), name = "Reresh Connection")
             ]
             done, pending = await asyncio.wait(tasks,return_when=asyncio.FIRST_EXCEPTION)
             for task in done:
@@ -104,6 +110,9 @@ class NavilinkConnect():
             if not self.shutting_down:
                 _LOGGER.warning("Connection to AWS IOT Navilink server reset, reconnecting in 15 seconds")
                 self.connected = False
+                # Reset health tracking for fresh start
+                self.consecutive_poll_failures = 0
+                self.last_data_received = None
                 await asyncio.sleep(15)
                 asyncio.create_task(self.start())
 
@@ -182,6 +191,9 @@ class NavilinkConnect():
                     await self._get_channel_info()
             await self._get_channel_status_all(wait_for_response = True)
             self.last_poll = datetime.now()
+            # Initialize data tracking after first successful data retrieval
+            self.last_data_received = datetime.now()
+            self.consecutive_poll_failures = 0
         else:
             raise NoAccessKey("Missing Access key, Secret key, or Session token")
 
@@ -193,9 +205,27 @@ class NavilinkConnect():
             else:
                 interval = 0.1
             await asyncio.sleep(interval)
+            
+            # Check for stale data before polling
+            if self._is_connection_stale():
+                _LOGGER.warning("Connection appears stale - no data received recently, triggering reconnection")
+                raise StaleConnectionError("No data received within staleness timeout")
+            
             pre_poll = datetime.now()
             if not self.client_lock.locked():
-                await self._get_channel_status_all()
+                # Track the poll attempt for failure detection
+                poll_successful = await self._get_channel_status_all_with_tracking()
+                if not poll_successful:
+                    self.consecutive_poll_failures += 1
+                    _LOGGER.warning(f"Poll failed, consecutive failures: {self.consecutive_poll_failures}/{self.MAX_CONSECUTIVE_FAILURES}")
+                    if self.consecutive_poll_failures >= self.MAX_CONSECUTIVE_FAILURES:
+                        _LOGGER.error("Too many consecutive poll failures, triggering reconnection")
+                        raise StaleConnectionError("Too many consecutive poll failures")
+                else:
+                    # Reset failure counter on success
+                    if self.consecutive_poll_failures > 0:
+                        _LOGGER.debug(f"Poll succeeded after {self.consecutive_poll_failures} failures, resetting counter")
+                    self.consecutive_poll_failures = 0
                 # Debug: Show channel status after polling
                 for channel_num, channel in self.channels.items():
                     _LOGGER.debug(f"Channel {channel_num} status after polling: {channel.channel_status}")
@@ -203,21 +233,44 @@ class NavilinkConnect():
             time_delta = (self.last_poll - pre_poll).total_seconds()
         if not self.shutting_down:
             raise PollingError("Polling of AWS IOT Navilink server completed")
+    
+    def _is_connection_stale(self):
+        """Check if the connection appears stale based on last data received."""
+        if self.last_data_received is None:
+            # No data received yet since connection - give it time
+            return False
+        
+        staleness_timeout = timedelta(seconds=self.polling_interval * self.STALENESS_TIMEOUT_MULTIPLIER)
+        time_since_data = datetime.now() - self.last_data_received
+        
+        if time_since_data > staleness_timeout:
+            _LOGGER.debug(f"Data staleness check: last data {time_since_data.total_seconds():.1f}s ago, timeout is {staleness_timeout.total_seconds():.1f}s")
+            return True
+        return False
+    
+    async def _get_channel_status_all_with_tracking(self):
+        """Poll for channel status and track if responses are received.
+        
+        Returns True if the poll was successful (response received), False otherwise.
+        """
+        # Store the current response count to compare after polling
+        initial_response_count = len(self.response_events)
+        
+        try:
+            await self._get_channel_status_all(wait_for_response=True)
+            # If we got here without timeout, the poll was successful
+            return True
+        except asyncio.TimeoutError:
+            _LOGGER.debug("Poll request timed out waiting for response")
+            return False
+        except Exception as e:
+            _LOGGER.debug(f"Poll request failed: {e}")
+            return False
 
     async def _server_connection_lost(self):
         await self.disconnect_event.wait()
         self.disconnect_event.clear()
         raise DisconnectEvent("Disconnected from Navilink server...")
-
-    async def _refresh_connection(self):
-        now = datetime.now()
-        target_time = datetime(now.year, now.month, now.day, 2, 0, 0)
-        if now > target_time:
-            # If it's already past 2 am, wait until tomorrow
-            target_time += timedelta(days=1)
-        delta = (target_time - now).total_seconds()
-        await asyncio.sleep(delta)
-        await self.disconnect(shutting_down=False)
 
     async def disconnect(self,shutting_down=True):
         if self.client and self.connected:
@@ -258,15 +311,27 @@ class NavilinkConnect():
             if response_event :=  self.response_events.get(session_id,None):
                 try:
                     await asyncio.wait_for(response_event.wait(),timeout=self.polling_interval)
-                except:
-                    pass
+                except asyncio.TimeoutError:
+                    _LOGGER.debug(f"Timeout waiting for response to session {session_id}")
+                    # Re-raise so caller can handle it
+                    response_event.clear()
+                    self.response_events.pop(session_id, None)
+                    raise
+                except Exception as e:
+                    _LOGGER.debug(f"Error waiting for response: {e}")
+                    response_event.clear()
+                    self.response_events.pop(session_id, None)
+                    raise
                 response_event.clear()
-                self.response_events.pop(session_id)
+                self.response_events.pop(session_id, None)
+        except asyncio.TimeoutError:
+            # Let timeout bubble up for tracking
+            raise
         except Exception as e:
             _LOGGER.debug("Error occurred in async_publish: " + str(e))
             if response_event :=  self.response_events.get(session_id,None):
                 response_event.clear()
-                self.response_events.pop(session_id)
+                self.response_events.pop(session_id, None)
             await self.disconnect(shutting_down=False)   
 
 
@@ -546,9 +611,15 @@ class NavilinkConnect():
     def get_session_id(self):
         return str(int(round((datetime.utcnow() - datetime(1970, 1, 1)).total_seconds()*1000)))
 
+    def _mark_data_received(self):
+        """Mark that data was received, updating the connection health tracking."""
+        self.last_data_received = datetime.now()
+        _LOGGER.debug(f"Data received, updated last_data_received to {self.last_data_received}")
+
     def async_handle_channel_info(self, client, userdata, message):
         response = json.loads(message.payload)
-        print(response)
+        _LOGGER.debug(f"Channel info response: {response}")
+        self._mark_data_received()
         channel_info = response.get("response",{})
         session_id = response.get("sessionID","unknown")
         self.channels = {channel.get("channelNumber",0):NavilinkChannel(channel.get("channelNumber",0),channel.get("channel",{}),self) for channel in channel_info.get("channelInfo",{}).get("channelList",[])}
@@ -560,6 +631,7 @@ class NavilinkConnect():
 
     def async_handle_channel_status(self, client, userdata, message):
         response = json.loads(message.payload)
+        self._mark_data_received()
         channel_status = response.get("response",{}).get("channelStatus",{})
         session_id = response.get("sessionID","unknown")
         if channel := self.channels.get(channel_status.get("channelNumber",0),None):
@@ -588,6 +660,7 @@ class NavilinkConnect():
     def async_handle_mgpp_did(self, client, userdata, message):
         response = json.loads(message.payload)
         _LOGGER.debug("MGPP DID Response: " + json.dumps(response, indent=2))
+        self._mark_data_received()
         session_id = response.get("sessionID", "unknown")
         
         # Store DID feature data in the channel for temperature conversion reference
@@ -609,6 +682,7 @@ class NavilinkConnect():
     def async_handle_mgpp_status(self, client, userdata, message):
         response = json.loads(message.payload)
         _LOGGER.debug("MGPP STATUS Response: " + json.dumps(response, indent=2))
+        self._mark_data_received()
         session_id = response.get("sessionID", "unknown")
         if response_event := self.response_events.get(session_id, None):
             response_event.set()
@@ -629,6 +703,7 @@ class NavilinkConnect():
     def async_handle_mgpp_rsv(self, client, userdata, message):
         response = json.loads(message.payload)
         _LOGGER.debug("MGPP RSV Response: " + json.dumps(response, indent=2))
+        self._mark_data_received()
         session_id = response.get("sessionID", "unknown")
         if response_event := self.response_events.get(session_id, None):
             response_event.set()
@@ -713,23 +788,29 @@ class NavilinkChannel:
     async def set_power_state(self,state):
         if not self.waiting_for_response:
             self.waiting_for_response = True
-            await self.hub._power_command(state,self.channel_number)
-            self.publish_update()
-            self.waiting_for_response = False
+            try:
+                await self.hub._power_command(state,self.channel_number)
+                self.publish_update()
+            finally:
+                self.waiting_for_response = False
 
     async def set_hot_button_state(self,state):
         if not self.waiting_for_response:
             self.waiting_for_response = True
-            await self.hub._hot_button_command(state,self.channel_number)
-            self.publish_update()
-            self.waiting_for_response = False
+            try:
+                await self.hub._hot_button_command(state,self.channel_number)
+                self.publish_update()
+            finally:
+                self.waiting_for_response = False
 
     async def set_temperature(self,temp):
         if not self.waiting_for_response:
             self.waiting_for_response = True
-            await self.hub._temperature_command(temp,self.channel_number)
-            self.publish_update()
-            self.waiting_for_response = False
+            try:
+                await self.hub._temperature_command(temp,self.channel_number)
+                self.publish_update()
+            finally:
+                self.waiting_for_response = False
 
     def convert_channel_status(self,channel_status):
         channel_status["powerStatus"] = channel_status["powerStatus"] == 1
@@ -853,9 +934,11 @@ class MgppChannel:
         """Set MGPP device power state"""
         if not self.waiting_for_response:
             self.waiting_for_response = True
-            await self.hub._mgpp_power_command(state, self.channel_number)
-            self.publish_update()
-            self.waiting_for_response = False
+            try:
+                await self.hub._mgpp_power_command(state, self.channel_number)
+                self.publish_update()
+            finally:
+                self.waiting_for_response = False
 
 
     def _celsius_to_raw(self, celsius):
@@ -866,10 +949,12 @@ class MgppChannel:
         """Set MGPP device temperature"""
         if not self.waiting_for_response:
             self.waiting_for_response = True
-            raw_temp = self._celsius_to_raw(temp_celsius)
-            await self.hub._mgpp_temperature_command(raw_temp, self.channel_number)
-            self.publish_update()
-            self.waiting_for_response = False
+            try:
+                raw_temp = self._celsius_to_raw(temp_celsius)
+                await self.hub._mgpp_temperature_command(raw_temp, self.channel_number)
+                self.publish_update()
+            finally:
+                self.waiting_for_response = False
 
     async def set_operation_mode(self, mode, days=None):
         """Set MGPP operation mode
@@ -880,27 +965,33 @@ class MgppChannel:
         """
         if not self.waiting_for_response:
             self.waiting_for_response = True
-            # Use provided days or fall back to channel's stored value
-            vacation_days = days if days is not None else self.vacation_days
-            await self.hub._mgpp_operation_mode_command(mode, self.channel_number, vacation_days)
-            self.publish_update()
-            self.waiting_for_response = False
+            try:
+                # Use provided days or fall back to channel's stored value
+                vacation_days = days if days is not None else self.vacation_days
+                await self.hub._mgpp_operation_mode_command(mode, self.channel_number, vacation_days)
+                self.publish_update()
+            finally:
+                self.waiting_for_response = False
 
     async def set_anti_legionella_state(self, state):
         """Set MGPP anti-legionella state"""
         if not self.waiting_for_response:
             self.waiting_for_response = True
-            await self.hub._mgpp_anti_legionella_command(state, self.channel_number)
-            self.publish_update()
-            self.waiting_for_response = False
+            try:
+                await self.hub._mgpp_anti_legionella_command(state, self.channel_number)
+                self.publish_update()
+            finally:
+                self.waiting_for_response = False
 
     async def set_freeze_protection_state(self, state):
         """Set MGPP freeze protection state"""
         if not self.waiting_for_response:
             self.waiting_for_response = True
-            await self.hub._mgpp_freeze_protection_command(state, self.channel_number)
-            self.publish_update()
-            self.waiting_for_response = False
+            try:
+                await self.hub._mgpp_freeze_protection_command(state, self.channel_number)
+                self.publish_update()
+            finally:
+                self.waiting_for_response = False
 
     def get_error_message(self):
         """Get human-readable error message if device has errors"""
@@ -1440,6 +1531,9 @@ class PollingError(Exception):
 
 class DisconnectEvent(Exception):
     """Server disconnected"""
+
+class StaleConnectionError(Exception):
+    """Connection is stale - no data received"""
 
 class NoChannelInformation(Exception):
     """No Channel Information"""
