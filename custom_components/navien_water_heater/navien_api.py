@@ -3,54 +3,201 @@ import enum
 import json
 import logging
 import uuid
-from datetime import datetime,timedelta
+from datetime import datetime, timedelta
 import AWSIoTPythonSDK.MQTTLib as mqtt
 import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
-class NavilinkConnect():
+
+class NavilinkAccountCoordinator:
+    """Coordinator that manages all gateways for a Navien account."""
 
     # The Navien server.
     navienWebServer = "https://nlus.naviensmartcontrol.com/api/v2"
 
-    # Connection health thresholds
-    MAX_CONSECUTIVE_FAILURES = 3  # Number of failed polls before triggering reconnection
-    STALENESS_TIMEOUT_MULTIPLIER = 4  # Consider stale if no data for polling_interval * this value
-
-    def __init__(self, userId, passwd, device_index = 0, polling_interval = 15, aws_cert_path = "AmazonRootCA1.pem", subscribe_all_topics=False):
+    def __init__(self, userId, passwd, polling_interval=15, aws_cert_path="AmazonRootCA1.pem"):
         """
-        Construct a new 'NavilinkConnect' object.
+        Construct a new 'NavilinkAccountCoordinator' object.
 
         :param userId: The user ID used to log in to the mobile application
         :param passwd: The corresponding user's password
-        :return: returns nothing
+        :param polling_interval: How often to poll for updates
+        :param aws_cert_path: Path to AWS IoT certificate
         """
-        _LOGGER.debug("Initializing NaviLink connection")
+        _LOGGER.debug("Initializing NaviLink account coordinator")
         self.userId = userId
         self.passwd = passwd
-        self.device_index = device_index
+        self.polling_interval = polling_interval
+        self.aws_cert_path = aws_cert_path
+        self.user_info = None
+        self.device_info_list = []
+        self.gateways = {}  # mac_address -> NavilinkConnect
+        self.hass = None  # Set by __init__.py for device registry access
+        self._disabled_devices = set()  # Set of device identifiers that are disabled
+
+    @property
+    def devices(self):
+        """Get all devices across all gateways."""
+        all_devices = {}
+        for gateway in self.gateways.values():
+            for device_id, device in gateway.devices.items():
+                all_devices[device_id] = device
+        return all_devices
+
+    async def login(self):
+        """
+        Login to the REST API and get device list.
+        Returns list of device info for validation purposes.
+        """
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                NavilinkAccountCoordinator.navienWebServer + "/user/sign-in",
+                json={"userId": self.userId, "password": self.passwd}
+            ) as response:
+                if response.status != 200:
+                    raise UnableToConnect("Unexpected response during login")
+                response_data = await response.json()
+                if response_data.get('msg', '') == "USER_NOT_FOUND":
+                    raise UserNotFound("Unable to log in with given credentials")
+                try:
+                    self.user_info = response_data["data"]
+                except KeyError:
+                    raise NoResponseData("Unexpected problem while retrieving user data")
+
+                return await self._get_device_list()
+
+    async def _get_device_list(self):
+        """Get list of devices for the given user credentials."""
+        headers = {"Authorization": self.user_info.get("token", {}).get("accessToken", "")}
+        async with aiohttp.ClientSession(headers=headers) as session:
+            async with session.post(
+                NavilinkAccountCoordinator.navienWebServer + "/device/list",
+                json={"offset": 0, "count": 20, "userId": self.userId}
+            ) as response:
+                if response.status != 200:
+                    raise UnableToConnect("Unexpected response while retrieving device list")
+                response_data = await response.json()
+                try:
+                    self.device_info_list = response_data["data"]
+                    _LOGGER.debug("Response data: " + str(response_data))
+                except KeyError:
+                    raise NoResponseData("Unexpected problem while retrieving device list")
+
+                return self.device_info_list
+
+    async def start(self):
+        """Start the coordinator and all gateway connections."""
+        if self.polling_interval > 0:
+            await self.login()
+            
+            if not self.device_info_list:
+                raise NoNavienDevices("No Navien devices found with the given credentials")
+
+            # Create a NavilinkConnect for each gateway
+            for device_info in self.device_info_list:
+                mac_address = device_info.get("deviceInfo", {}).get("macAddress", "")
+                if mac_address and mac_address not in self.gateways:
+                    gateway = NavilinkConnect(
+                        user_info=self.user_info,
+                        device_info=device_info,
+                        polling_interval=self.polling_interval,
+                        aws_cert_path=self.aws_cert_path,
+                        coordinator=self
+                    )
+                    self.gateways[mac_address] = gateway
+                    await gateway.start()
+
+            if not self.devices:
+                raise NoNavienDevices("No Navien devices found with the given credentials")
+
+            return self.devices
+        else:
+            # Just login for validation purposes
+            return await self.login()
+
+    async def disconnect(self):
+        """Disconnect all gateways."""
+        for gateway in self.gateways.values():
+            await gateway.disconnect()
+        self.gateways.clear()
+
+    def is_device_disabled(self, device_identifier):
+        """Check if a device is disabled in Home Assistant's device registry.
+        
+        Args:
+            device_identifier: The unique identifier for the device (mac_address or mac_address_channel)
+        
+        Returns:
+            True if the device is disabled, False otherwise
+        """
+        if self.hass is None:
+            return False
+        
+        try:
+            from homeassistant.helpers import device_registry as dr
+            device_registry = dr.async_get(self.hass)
+            
+            # Look up the device by its identifier
+            from .const import DOMAIN
+            device = device_registry.async_get_device(identifiers={(DOMAIN, device_identifier)})
+            
+            if device and device.disabled_by is not None:
+                return True
+            return False
+        except Exception as e:
+            _LOGGER.debug(f"Error checking device disabled state: {e}")
+            return False
+
+    def update_disabled_devices(self):
+        """Update the set of disabled devices from the device registry."""
+        self._disabled_devices.clear()
+        for device_id, device in self.devices.items():
+            if self.is_device_disabled(device.device_identifier):
+                self._disabled_devices.add(device.device_identifier)
+        _LOGGER.debug(f"Updated disabled devices: {self._disabled_devices}")
+
+
+class NavilinkConnect:
+    """Manages connection to a single NaviLink gateway."""
+
+    # Connection health thresholds
+    MAX_CONSECUTIVE_FAILURES = 3
+    STALENESS_TIMEOUT_MULTIPLIER = 4
+
+    def __init__(self, user_info, device_info, polling_interval=15, aws_cert_path="AmazonRootCA1.pem", 
+                 subscribe_all_topics=False, coordinator=None):
+        """
+        Construct a new 'NavilinkConnect' object for a single gateway.
+
+        :param user_info: User authentication info from login
+        :param device_info: Device info for this gateway
+        :param polling_interval: How often to poll for updates
+        :param aws_cert_path: Path to AWS IoT certificate
+        :param coordinator: Parent NavilinkAccountCoordinator
+        """
+        _LOGGER.debug("Initializing NaviLink gateway connection")
+        self.user_info = user_info
+        self.device_info = device_info
         self.polling_interval = polling_interval
         self.aws_cert_path = aws_cert_path
         self.subscribe_all_topics = subscribe_all_topics
+        self.coordinator = coordinator
         self.loop = asyncio.get_running_loop()
         self.connected = False
         self.shutting_down = False
-        self.user_info = None
-        self.device_info = None
         self.client = None
         self.client_id = ""
         self.topics = None
         self.messages = None
-        self.channels = {}
+        self.devices = {}  # Renamed from channels
         self.disconnect_event = asyncio.Event()
-        self.channel_info_event = None
         self.response_events = {}
         self.client_lock = asyncio.Lock()
         self.last_poll = None
-        # Connection health tracking
-        self.last_data_received = None  # Timestamp of last successful data receipt
-        self.consecutive_poll_failures = 0  # Counter for failed poll responses
+        self.last_data_received = None
+        self.consecutive_poll_failures = 0
+        self.device_type = int(self.device_info.get("deviceInfo", {}).get("deviceType", 1))
 
     @property
     def is_mgpp(self) -> bool:
@@ -60,45 +207,51 @@ class NavilinkConnect():
         except Exception:
             return False
 
+    @property
+    def mac_address(self):
+        """Get the MAC address of this gateway."""
+        return self.device_info.get("deviceInfo", {}).get("macAddress", "")
+
+    @property
+    def device_name(self):
+        """Get the device name of this gateway."""
+        return self.device_info.get("deviceInfo", {}).get("deviceName", "Unknown")
+
     def _uses_mgpp_protocol(self):
         """
         Determine if the device uses the MGPP protocol.
-        
         Currently, only device type 52 (NWP500) uses MGPP protocol.
-        This function can be extended to support other device types in the future.
-        
-        :return: True if device uses MGPP protocol, False otherwise
         """
         return self.device_type == 52
 
     async def start(self):
+        """Start the gateway connection."""
         if self.polling_interval > 0:
-            valid_user = True
-            while not self.connected and valid_user and not self.shutting_down:
+            while not self.connected and not self.shutting_down:
                 try:
-                    await self.login()
-                except (UserNotFound,UnableToConnect,NoResponseData) as err:
-                    _LOGGER.error(err)
-                    valid_user=False
+                    await self._connect_aws_mqtt()
+                except (NoAccessKey, UnableToConnect, UserNotFound, NoResponseData, NoChannelInformation) as e:
+                    # Fatal errors - don't retry, fail immediately
+                    _LOGGER.error("Fatal connection error during start up: " + str(e))
+                    raise
                 except Exception as e:
-                    _LOGGER.error("Connection error during start up: " +str(e))
+                    # Transient errors - retry after delay
+                    _LOGGER.error("Transient connection error during start up: " + str(e))
                     await asyncio.sleep(15)
                 else:
                     asyncio.create_task(self._start())
-                    if len(self.channels) > 0:
-                        return self.channels
+                    if len(self.devices) > 0:
+                        return self.devices
                     else:
-                        raise NoNavienDevices("No Navien devices found with the given credentials")
-        else:
-            return await self.login()
+                        raise NoNavienDevices("No Navien devices found for this gateway")
 
     async def _start(self):
         if not self.shutting_down:
             tasks = [
-                asyncio.create_task(self._poll_mqtt_server(), name = "Poll MQTT Server"),
-                asyncio.create_task(self._server_connection_lost(), name = "Connection Lost Event"),
+                asyncio.create_task(self._poll_mqtt_server(), name="Poll MQTT Server"),
+                asyncio.create_task(self._server_connection_lost(), name="Connection Lost Event"),
             ]
-            done, pending = await asyncio.wait(tasks,return_when=asyncio.FIRST_EXCEPTION)
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
             for task in done:
                 name = task.get_name()
                 try:
@@ -106,92 +259,57 @@ class NavilinkConnect():
                 except Exception as e:
                     _LOGGER.error(name + ": " + str(type(e).__name__) + ": " + str(e))
             for task in pending:
-                task.cancel()     
+                task.cancel()
             if not self.shutting_down:
                 _LOGGER.warning("Connection to AWS IOT Navilink server reset, reconnecting in 15 seconds")
                 self.connected = False
-                # Reset health tracking for fresh start
                 self.consecutive_poll_failures = 0
                 self.last_data_received = None
                 await asyncio.sleep(15)
                 asyncio.create_task(self.start())
 
-    async def login(self):
-        """
-        Login to the REST API and save user information
-        """
-        async with aiohttp.ClientSession() as session:
-            async with session.post(NavilinkConnect.navienWebServer + "/user/sign-in", json={"userId": self.userId, "password": self.passwd}) as response:
-                # If an error occurs this will raise it, otherwise it calls get_device and returns after device is obtained from the server
-                if response.status != 200:
-                    raise UnableToConnect("Unexpected response during login")
-                response_data = await response.json()
-                if response_data.get('msg','') == "USER_NOT_FOUND":
-                    raise UserNotFound("Unable to log in with given credentials")
-                try:
-                    response_data["data"]
-                    self.user_info = response_data["data"]
-                except:
-                    raise NoResponseData("Unexpected problem while retrieving user data")
-                
-                return await self._get_device_list()
-
-    async def _get_device_list(self):
-        """
-        Get list of devices for the given user credentials
-        """
-        headers = {"Authorization":self.user_info.get("token",{}).get("accessToken","")}
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.post(NavilinkConnect.navienWebServer + "/device/list", json={"offset":0,"count":20,"userId":self.userId}) as response:
-                # If an error occurs this will raise it, otherwise it returns the gateway list.
-                if response.status != 200:
-                    raise UnableToConnect("Unexpected response while retrieving device list")
-                response_data = await response.json()
-                try:
-                    response_data["data"]
-                    device_info_list = response_data["data"]
-                    self.device_info = device_info_list[self.device_index]
-                    _LOGGER.debug("Response data: " + str(response_data))
-                except:
-                    raise NoResponseData("Unexpected problem while retrieving device list")
-                
-                if self.polling_interval > 0:
-                    await self._connect_aws_mqtt()
-                return device_info_list
-
     async def _connect_aws_mqtt(self):
         self.client_id = str(uuid.uuid4())
-        self.device_type = int(self.device_info.get("deviceInfo",{}).get("deviceType",1))
         if self._uses_mgpp_protocol():
             self.topics = MgppTopics(self.user_info, self.device_info, self.client_id)
             self.messages = MgppMessages(self.device_info, self.client_id, self.topics)
         else:
             self.topics = Topics(self.user_info, self.device_info, self.client_id)
             self.messages = Messages(self.device_info, self.client_id, self.topics)
-        accessKeyId = self.user_info.get("token",{}).get("accessKeyId",None)
-        secretKey = self.user_info.get("token",{}).get("secretKey",None)
-        sessionToken = self.user_info.get("token",{}).get("sessionToken",None)
+        
+        accessKeyId = self.user_info.get("token", {}).get("accessKeyId", None)
+        secretKey = self.user_info.get("token", {}).get("secretKey", None)
+        sessionToken = self.user_info.get("token", {}).get("sessionToken", None)
 
         if accessKeyId and secretKey and sessionToken:
-            self.client = mqtt.AWSIoTMQTTClient(clientID = self.client_id, protocolType=4, useWebsocket=True, cleanSession=True)
-            self.client.configureEndpoint(hostName= 'a1t30mldyslmuq-ats.iot.us-east-1.amazonaws.com', portNumber= 443)
+            self.client = mqtt.AWSIoTMQTTClient(
+                clientID=self.client_id, protocolType=4, useWebsocket=True, cleanSession=True
+            )
+            self.client.configureEndpoint(
+                hostName='a1t30mldyslmuq-ats.iot.us-east-1.amazonaws.com', portNumber=443
+            )
             self.client.configureUsernamePassword(username='?SDK=Android&Version=2.16.12', password=None)
-            self.client.configureLastWill(topic = self.topics.app_connection(), payload = json.dumps(self.messages.last_will(),separators=(',',':')), QoS=1, retain=False)
-            await self.loop.run_in_executor(None,self.client.configureCredentials,self.aws_cert_path)
-            self.client.configureIAMCredentials(AWSAccessKeyID=accessKeyId, AWSSecretAccessKey=secretKey, AWSSessionToken=sessionToken)
+            self.client.configureLastWill(
+                topic=self.topics.app_connection(),
+                payload=json.dumps(self.messages.last_will(), separators=(',', ':')),
+                QoS=1, retain=False
+            )
+            await self.loop.run_in_executor(None, self.client.configureCredentials, self.aws_cert_path)
+            self.client.configureIAMCredentials(
+                AWSAccessKeyID=accessKeyId, AWSSecretAccessKey=secretKey, AWSSessionToken=sessionToken
+            )
             self.client.configureConnectDisconnectTimeout(5)
-            self.client.onOffline=self._on_offline
-            self.client.onOnline=self._on_online
-            await self.loop.run_in_executor(None,self.client.connect)
+            self.client.onOffline = self._on_offline
+            self.client.onOnline = self._on_online
+            await self.loop.run_in_executor(None, self.client.connect)
             await self._subscribe_to_topics()
-            if not len(self.channels):
+            if not len(self.devices):
                 if self._uses_mgpp_protocol():
                     await self._get_mgpp_device_info()
                 else:
-                    await self._get_channel_info()
-            await self._get_channel_status_all(wait_for_response = True)
+                    await self._get_device_info()
+            await self._get_device_status_all(wait_for_response=True)
             self.last_poll = datetime.now()
-            # Initialize data tracking after first successful data retrieval
             self.last_data_received = datetime.now()
             self.consecutive_poll_failures = 0
         else:
@@ -205,60 +323,68 @@ class NavilinkConnect():
             else:
                 interval = 0.1
             await asyncio.sleep(interval)
-            
-            # Check for stale data before polling
+
             if self._is_connection_stale():
                 _LOGGER.warning("Connection appears stale - no data received recently, triggering reconnection")
                 raise StaleConnectionError("No data received within staleness timeout")
-            
+
             pre_poll = datetime.now()
             if not self.client_lock.locked():
-                # Track the poll attempt for failure detection
-                poll_successful = await self._get_channel_status_all_with_tracking()
-                if not poll_successful:
-                    self.consecutive_poll_failures += 1
-                    _LOGGER.warning(f"Poll failed, consecutive failures: {self.consecutive_poll_failures}/{self.MAX_CONSECUTIVE_FAILURES}")
-                    if self.consecutive_poll_failures >= self.MAX_CONSECUTIVE_FAILURES:
-                        _LOGGER.error("Too many consecutive poll failures, triggering reconnection")
-                        raise StaleConnectionError("Too many consecutive poll failures")
+                # Update disabled devices before polling
+                if self.coordinator:
+                    self.coordinator.update_disabled_devices()
+                
+                # Check if all devices are disabled - skip polling entirely
+                all_disabled = all(
+                    self.coordinator and self.coordinator.is_device_disabled(device.device_identifier)
+                    for device in self.devices.values()
+                ) if self.devices else False
+                
+                if all_disabled:
+                    _LOGGER.debug("All devices for this gateway are disabled, skipping poll")
                 else:
-                    # Reset failure counter on success
-                    if self.consecutive_poll_failures > 0:
-                        _LOGGER.debug(f"Poll succeeded after {self.consecutive_poll_failures} failures, resetting counter")
-                    self.consecutive_poll_failures = 0
-                # Debug: Show channel status after polling
-                for channel_num, channel in self.channels.items():
-                    _LOGGER.debug(f"Channel {channel_num} status after polling: {channel.channel_status}")
+                    poll_successful = await self._get_device_status_all_with_tracking()
+                    if not poll_successful:
+                        self.consecutive_poll_failures += 1
+                        _LOGGER.warning(
+                            f"Poll failed, consecutive failures: {self.consecutive_poll_failures}/{self.MAX_CONSECUTIVE_FAILURES}"
+                        )
+                        if self.consecutive_poll_failures >= self.MAX_CONSECUTIVE_FAILURES:
+                            _LOGGER.error("Too many consecutive poll failures, triggering reconnection")
+                            raise StaleConnectionError("Too many consecutive poll failures")
+                    else:
+                        if self.consecutive_poll_failures > 0:
+                            _LOGGER.debug(
+                                f"Poll succeeded after {self.consecutive_poll_failures} failures, resetting counter"
+                            )
+                        self.consecutive_poll_failures = 0
+                    for device_num, device in self.devices.items():
+                        _LOGGER.debug(f"Device {device_num} status after polling: {device.channel_status}")
             self.last_poll = datetime.now()
             time_delta = (self.last_poll - pre_poll).total_seconds()
         if not self.shutting_down:
             raise PollingError("Polling of AWS IOT Navilink server completed")
-    
+
     def _is_connection_stale(self):
         """Check if the connection appears stale based on last data received."""
         if self.last_data_received is None:
-            # No data received yet since connection - give it time
             return False
-        
+
         staleness_timeout = timedelta(seconds=self.polling_interval * self.STALENESS_TIMEOUT_MULTIPLIER)
         time_since_data = datetime.now() - self.last_data_received
-        
+
         if time_since_data > staleness_timeout:
-            _LOGGER.debug(f"Data staleness check: last data {time_since_data.total_seconds():.1f}s ago, timeout is {staleness_timeout.total_seconds():.1f}s")
+            _LOGGER.debug(
+                f"Data staleness check: last data {time_since_data.total_seconds():.1f}s ago, "
+                f"timeout is {staleness_timeout.total_seconds():.1f}s"
+            )
             return True
         return False
-    
-    async def _get_channel_status_all_with_tracking(self):
-        """Poll for channel status and track if responses are received.
-        
-        Returns True if the poll was successful (response received), False otherwise.
-        """
-        # Store the current response count to compare after polling
-        initial_response_count = len(self.response_events)
-        
+
+    async def _get_device_status_all_with_tracking(self):
+        """Poll for device status and track if responses are received."""
         try:
-            await self._get_channel_status_all(wait_for_response=True)
-            # If we got here without timeout, the poll was successful
+            await self._get_device_status_all(wait_for_response=True)
             return True
         except asyncio.TimeoutError:
             _LOGGER.debug("Poll request timed out waiting for response")
@@ -272,14 +398,13 @@ class NavilinkConnect():
         self.disconnect_event.clear()
         raise DisconnectEvent("Disconnected from Navilink server...")
 
-    async def disconnect(self,shutting_down=True):
+    async def disconnect(self, shutting_down=True):
         if self.client and self.connected:
             self.shutting_down = shutting_down
             try:
-                await self.loop.run_in_executor(None,self.client.disconnect)
+                await self.loop.run_in_executor(None, self.client.disconnect)
             except Exception as e:
                 _LOGGER.warning(f"Error during disconnect: {e}")
-                # Continue with shutdown even if disconnect fails
 
     def _on_online(self):
         self.connected = True
@@ -288,32 +413,31 @@ class NavilinkConnect():
         if not self.shutting_down:
             self.disconnect_event.set()
 
-    async def async_subscribe(self,topic,QoS=1,callback=None):
+    async def async_subscribe(self, topic, QoS=1, callback=None):
         _LOGGER.debug("Subscribing to " + topic)
         try:
             def subscribe():
-                self.client.subscribe(topic=topic,QoS=QoS,callback=callback)
+                self.client.subscribe(topic=topic, QoS=QoS, callback=callback)
 
             async with self.client_lock:
-                await self.loop.run_in_executor(None,subscribe)
+                await self.loop.run_in_executor(None, subscribe)
         except Exception as e:
             _LOGGER.debug("Error occurred in async_subscribe: " + str(e))
-            await self.disconnect(shutting_down=False)           
+            await self.disconnect(shutting_down=False)
 
-    async def async_publish(self,topic,payload,QoS=1,session_id=""):
+    async def async_publish(self, topic, payload, QoS=1, session_id=""):
         try:
             def publish():
-                self.client.publish(topic=topic,payload=json.dumps(payload,separators=(',',':')),QoS=QoS)
-                                
-            async with self.client_lock:
-                await self.loop.run_in_executor(None,publish)
+                self.client.publish(topic=topic, payload=json.dumps(payload, separators=(',', ':')), QoS=QoS)
 
-            if response_event :=  self.response_events.get(session_id,None):
+            async with self.client_lock:
+                await self.loop.run_in_executor(None, publish)
+
+            if response_event := self.response_events.get(session_id, None):
                 try:
-                    await asyncio.wait_for(response_event.wait(),timeout=self.polling_interval)
+                    await asyncio.wait_for(response_event.wait(), timeout=self.polling_interval)
                 except asyncio.TimeoutError:
                     _LOGGER.debug(f"Timeout waiting for response to session {session_id}")
-                    # Re-raise so caller can handle it
                     response_event.clear()
                     self.response_events.pop(session_id, None)
                     raise
@@ -325,58 +449,49 @@ class NavilinkConnect():
                 response_event.clear()
                 self.response_events.pop(session_id, None)
         except asyncio.TimeoutError:
-            # Let timeout bubble up for tracking
             raise
         except Exception as e:
             _LOGGER.debug("Error occurred in async_publish: " + str(e))
-            if response_event :=  self.response_events.get(session_id,None):
+            if response_event := self.response_events.get(session_id, None):
                 response_event.clear()
                 self.response_events.pop(session_id, None)
-            await self.disconnect(shutting_down=False)   
-
+            await self.disconnect(shutting_down=False)
 
     async def _subscribe_to_topics(self):
         if self._uses_mgpp_protocol():
-            # MGPP protocol devices (currently NWP500 aka deviceType 52)
             await self.async_subscribe(topic=self.topics.mgpp_default(), callback=self.handle_other)
             await self.async_subscribe(topic=self.topics.mgpp_res_did(), callback=self.handle_mgpp_did)
             await self.async_subscribe(topic=self.topics.mgpp_res(), callback=self.handle_mgpp_status)
             await self.async_subscribe(topic=self.topics.mgpp_res_rsv_rd(), callback=self.handle_mgpp_rsv)
-            # Subscribe to control failure notifications per spec
             await self.async_subscribe(topic=self.topics.mgpp_ctrl_fail(), callback=self.handle_mgpp_ctrl_fail)
-            # Subscribe to connection event topics per spec
             await self.async_subscribe(topic=self.topics.app_connection(), callback=self.handle_mgpp_connection)
             await self.async_subscribe(topic=self.topics.mgpp_connection(), callback=self.handle_mgpp_connection)
-            # Subscribe to disconnect broadcast per spec
             await self.async_subscribe(topic=self.topics.mgpp_disconnect(), callback=self.handle_mgpp_disconnect)
         else:
-            await self.async_subscribe(topic=self.topics.channel_info_sub(),callback=self.handle_other)
-            await self.async_subscribe(topic=self.topics.channel_info_res(),callback=self.handle_channel_info)
-            await self.async_subscribe(topic=self.topics.control_fail(),callback=self.handle_other)
-            await self.async_subscribe(topic=self.topics.channel_status_sub(),callback=self.handle_other)
-            await self.async_subscribe(topic=self.topics.channel_status_res(),callback=self.handle_channel_status)
-            await self.async_subscribe(topic=self.topics.connection(),callback=self.handle_other)
-            await self.async_subscribe(topic=self.topics.disconnect(),callback=self.handle_other)
-            await self.async_subscribe(topic=self.topics.disconnect(),callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.channel_info_sub(), callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.channel_info_res(), callback=self.handle_device_info)
+            await self.async_subscribe(topic=self.topics.control_fail(), callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.channel_status_sub(), callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.channel_status_res(), callback=self.handle_device_status)
+            await self.async_subscribe(topic=self.topics.connection(), callback=self.handle_other)
+            await self.async_subscribe(topic=self.topics.disconnect(), callback=self.handle_other)
             if self.subscribe_all_topics:
-                await self.async_subscribe(topic=self.topics.weekly_schedule_sub(),callback=self.handle_other)
-                await self.async_subscribe(topic=self.topics.weekly_schedule_res(),callback=self.handle_weekly_schedule)
-                await self.async_subscribe(topic=self.topics.simple_trend_sub(),callback=self.handle_other)
-                await self.async_subscribe(topic=self.topics.simple_trend_res(),callback=self.handle_simple_trend)
-                await self.async_subscribe(topic=self.topics.hourly_trend_sub(),callback=self.handle_other)
-                await self.async_subscribe(topic=self.topics.hourly_trend_res(),callback=self.handle_hourly_trend)
-                await self.async_subscribe(topic=self.topics.daily_trend_sub(),callback=self.handle_other)
-                await self.async_subscribe(topic=self.topics.daily_trend_res(),callback=self.handle_daily_trend)
-                await self.async_subscribe(topic=self.topics.monthly_trend_sub(),callback=self.handle_other)
-                await self.async_subscribe(topic=self.topics.monthly_trend_res(),callback=self.handle_monthly_trend)
+                await self.async_subscribe(topic=self.topics.weekly_schedule_sub(), callback=self.handle_other)
+                await self.async_subscribe(topic=self.topics.weekly_schedule_res(), callback=self.handle_weekly_schedule)
+                await self.async_subscribe(topic=self.topics.simple_trend_sub(), callback=self.handle_other)
+                await self.async_subscribe(topic=self.topics.simple_trend_res(), callback=self.handle_simple_trend)
+                await self.async_subscribe(topic=self.topics.hourly_trend_sub(), callback=self.handle_other)
+                await self.async_subscribe(topic=self.topics.hourly_trend_res(), callback=self.handle_hourly_trend)
+                await self.async_subscribe(topic=self.topics.daily_trend_sub(), callback=self.handle_other)
+                await self.async_subscribe(topic=self.topics.daily_trend_res(), callback=self.handle_daily_trend)
+                await self.async_subscribe(topic=self.topics.monthly_trend_sub(), callback=self.handle_other)
+                await self.async_subscribe(topic=self.topics.monthly_trend_res(), callback=self.handle_monthly_trend)
 
     async def _get_mgpp_device_info(self):
         """Initialize MGPP device by requesting DID and status information"""
         _LOGGER.debug("Initializing MGPP device...")
-        
-        # Create MGPP channel first (single channel for now)
-        if len(self.channels) == 0:
-            # Create a basic channel with minimal info for MGPP
+
+        if len(self.devices) == 0:
             channel_info = {
                 "channelNumber": 1,
                 "channel": {
@@ -388,71 +503,78 @@ class NavilinkConnect():
                 "setupDHWTempMin": 100,
                 "setupDHWTempMax": 140
             }
-            self.channels[1] = MgppChannel(1, channel_info, self, None)
-            _LOGGER.debug("Created MGPP channel")
-        
-        # Request device ID
+            self.devices[1] = MgppDevice(1, channel_info, self, None)
+            _LOGGER.debug("Created MGPP device")
+
         topic = self.topics.mgpp_st_did()
         payload = self.messages.mgpp_did()
         session_id = self.get_session_id()
         payload["sessionID"] = session_id
         self.response_events[session_id] = asyncio.Event()
         await self.async_publish(topic=topic, payload=payload, session_id=session_id)
-        
-        # Request status
+
         topic = self.topics.mgpp_st()
         payload = self.messages.mgpp_status()
         session_id = self.get_session_id()
         payload["sessionID"] = session_id
         self.response_events[session_id] = asyncio.Event()
         await self.async_publish(topic=topic, payload=payload, session_id=session_id)
-        
-        # Request RSV data
+
         topic = self.topics.mgpp_st_rsv_rd()
         payload = self.messages.mgpp_rsv_rd()
         session_id = self.get_session_id()
         payload["sessionID"] = session_id
         self.response_events[session_id] = asyncio.Event()
         await self.async_publish(topic=topic, payload=payload, session_id=session_id)
-        
-        
-        if len(self.channels) == 0:
+
+        if len(self.devices) == 0:
             raise NoChannelInformation("Unable to get MGPP device information")
 
-    async def _get_channel_info(self):
+    async def _get_device_info(self):
+        """Get channel/device info for legacy devices."""
         topic = self.topics.start()
         payload = self.messages.channel_info()
         session_id = self.get_session_id()
         payload["sessionID"] = session_id
         self.response_events[session_id] = asyncio.Event()
-        await self.async_publish(topic=topic,payload=payload,session_id=session_id)
-        if len(self.channels) == 0:
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        if len(self.devices) == 0:
             raise NoChannelInformation("Unable to get channel information")
 
-    async def _get_channel_status_all(self,wait_for_response=False):
-        _LOGGER.debug(f"Getting channel status for device type {self.device_type}, wait_for_response={wait_for_response}")
+    async def _get_device_status_all(self, wait_for_response=False):
+        """Get status for all devices on this gateway."""
+        _LOGGER.debug(f"Getting device status for device type {self.device_type}, wait_for_response={wait_for_response}")
         if self._uses_mgpp_protocol():
-            # MGPP protocol - request status and RSV data
             _LOGGER.debug("Using MGPP protocol for status requests")
             await self._get_mgpp_status_all(wait_for_response)
         else:
-            # Legacy protocol
             _LOGGER.debug("Using legacy protocol for status requests")
-            for channel in self.channels.values():
+            for device in self.devices.values():
+                # Skip polling for disabled devices
+                if self.coordinator and self.coordinator.is_device_disabled(device.device_identifier):
+                    _LOGGER.debug(f"Skipping disabled device {device.device_identifier}")
+                    continue
+                    
                 topic = self.topics.channel_status_req()
-                payload = self.messages.channel_status(channel.channel_number,channel.channel_info.get("unitCount",1))
+                payload = self.messages.channel_status(device.channel_number, device.channel_info.get("unitCount", 1))
                 session_id = self.get_session_id()
                 payload["sessionID"] = session_id
                 if wait_for_response:
                     self.response_events[session_id] = asyncio.Event()
                 else:
                     session_id = ""
-                await self.async_publish(topic=topic,payload=payload,session_id=session_id)
+                await self.async_publish(topic=topic, payload=payload, session_id=session_id)
 
     async def _get_mgpp_status_all(self, wait_for_response=False):
         """Poll MGPP device for status and RSV data"""
         _LOGGER.debug("Polling MGPP device for status...")
-        # Request status
+        
+        # Check if MGPP device is disabled
+        for device in self.devices.values():
+            if self.coordinator and self.coordinator.is_device_disabled(device.device_identifier):
+                _LOGGER.debug(f"Skipping disabled MGPP device {device.device_identifier}")
+                return
+        
         topic = self.topics.mgpp_st()
         payload = self.messages.mgpp_status()
         session_id = self.get_session_id()
@@ -463,8 +585,7 @@ class NavilinkConnect():
         else:
             session_id = ""
         await self.async_publish(topic=topic, payload=payload, session_id=session_id)
-        
-        # Request RSV data
+
         topic = self.topics.mgpp_st_rsv_rd()
         payload = self.messages.mgpp_rsv_rd()
         session_id = self.get_session_id()
@@ -474,106 +595,94 @@ class NavilinkConnect():
         else:
             session_id = ""
         await self.async_publish(topic=topic, payload=payload, session_id=session_id)
-        
 
-    async def _get_channel_status(self,channel_number):
-        channel = self.channels.get(channel_number,{})
+    async def _get_device_status(self, channel_number):
+        """Get status for a specific device."""
+        device = self.devices.get(channel_number, {})
         topic = self.topics.channel_status_req()
-        payload = self.messages.channel_status(channel.channel_number,channel.channel_info.get("unitCount",1))
+        payload = self.messages.channel_status(device.channel_number, device.channel_info.get("unitCount", 1))
         session_id = self.get_session_id()
         payload["sessionID"] = session_id
         self.response_events[session_id] = asyncio.Event()
-        await self.async_publish(topic=topic,payload=payload,session_id=session_id)
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
 
-    async def _power_command(self,state,channel_number):
+    async def _power_command(self, state, channel_number):
         """Unified power control command that routes to appropriate protocol implementation"""
         if self._uses_mgpp_protocol():
             await self._mgpp_power_command(state, channel_number)
         else:
             await self._legacy_power_command(state, channel_number)
 
-    async def _legacy_power_command(self,state,channel_number):
+    async def _legacy_power_command(self, state, channel_number):
         """Legacy protocol power control command"""
-        state_num = 2
-        if state:
-            state_num = 1
+        state_num = 1 if state else 2
         topic = self.topics.control()
         payload = self.messages.power(state_num, channel_number)
         session_id = self.get_session_id()
         payload["sessionID"] = session_id
         self.response_events[session_id] = asyncio.Event()
-        await self.async_publish(topic=topic,payload=payload,session_id=session_id)
-        await self._get_channel_status(channel_number)
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        await self._get_device_status(channel_number)
 
     async def _mgpp_power_command(self, state, channel_number):
         """MGPP power control command"""
         if not self._uses_mgpp_protocol():
             raise ValueError("MGPP power command only supported for MGPP protocol devices")
-        
+
         topic = self.topics.mgpp_control()
         payload = self.messages.mgpp_power(state, channel_number)
         session_id = self.get_session_id()
         payload["sessionID"] = session_id
         self.response_events[session_id] = asyncio.Event()
         await self.async_publish(topic=topic, payload=payload, session_id=session_id)
-        # Request status update after control command
         await self._get_mgpp_status_all(wait_for_response=True)
 
-    async def _hot_button_command(self,state,channel_number):
+    async def _hot_button_command(self, state, channel_number):
         """Hot button control command"""
-        state_num = 2
-        if state:
-            state_num = 1
+        state_num = 1 if state else 2
         topic = self.topics.control()
         payload = self.messages.hot_button(state_num, channel_number)
         session_id = self.get_session_id()
         payload["sessionID"] = session_id
         self.response_events[session_id] = asyncio.Event()
-        await self.async_publish(topic=topic,payload=payload,session_id=session_id)
-        await self._get_channel_status(channel_number)
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        await self._get_device_status(channel_number)
 
-    async def _temperature_command(self,temp,channel_number):
+    async def _temperature_command(self, temp, channel_number):
         """Unified temperature control command that routes to appropriate protocol implementation"""
         if self._uses_mgpp_protocol():
             await self._mgpp_temperature_command(temp, channel_number)
         else:
             await self._legacy_temperature_command(temp, channel_number)
 
-    async def _legacy_temperature_command(self,temp,channel_number):
+    async def _legacy_temperature_command(self, temp, channel_number):
         """Legacy protocol temperature control command"""
         topic = self.topics.control()
         payload = self.messages.temperature(temp, channel_number)
         session_id = self.get_session_id()
         payload["sessionID"] = session_id
         self.response_events[session_id] = asyncio.Event()
-        await self.async_publish(topic=topic,payload=payload,session_id=session_id)
-        await self._get_channel_status(channel_number)
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        await self._get_device_status(channel_number)
 
     async def _mgpp_temperature_command(self, temp, channel_number):
         """MGPP temperature control command"""
         if not self._uses_mgpp_protocol():
             raise ValueError("MGPP temperature command only supported for MGPP protocol devices")
-        
+
         topic = self.topics.mgpp_control()
         payload = self.messages.mgpp_temperature(temp, channel_number)
         session_id = self.get_session_id()
         payload["sessionID"] = session_id
         self.response_events[session_id] = asyncio.Event()
         await self.async_publish(topic=topic, payload=payload, session_id=session_id)
-        # Request status update after control command
         await self._get_mgpp_status_all(wait_for_response=True)
 
     async def _mgpp_operation_mode_command(self, mode, channel_number, days=None):
-        """MGPP operation mode control command
-        
-        Args:
-            mode: Operation mode (5 for vacation mode)
-            channel_number: Channel number
-            days: Optional days parameter for vacation mode. If None and mode is 5, defaults to 7
-        """
+        """MGPP operation mode control command"""
         if not self._uses_mgpp_protocol():
             raise ValueError("MGPP operation mode only supported for MGPP protocol devices")
-        
+
         topic = self.topics.mgpp_control()
         payload = self.messages.mgpp_operation_mode(mode, channel_number, days)
         session_id = self.get_session_id()
@@ -586,7 +695,7 @@ class NavilinkConnect():
         """MGPP anti-legionella control command"""
         if not self._uses_mgpp_protocol():
             raise ValueError("MGPP anti-legionella only supported for MGPP protocol devices")
-        
+
         topic = self.topics.mgpp_control()
         payload = self.messages.mgpp_anti_legionella(state, channel_number)
         session_id = self.get_session_id()
@@ -599,7 +708,7 @@ class NavilinkConnect():
         """MGPP freeze protection control command"""
         if not self._uses_mgpp_protocol():
             raise ValueError("MGPP freeze protection only supported for MGPP protocol devices")
-        
+
         topic = self.topics.mgpp_control()
         payload = self.messages.mgpp_freeze_protection(state, channel_number)
         session_id = self.get_session_id()
@@ -609,38 +718,50 @@ class NavilinkConnect():
         await self._get_mgpp_status_all(wait_for_response=True)
 
     def get_session_id(self):
-        return str(int(round((datetime.utcnow() - datetime(1970, 1, 1)).total_seconds()*1000)))
+        return str(int(round((datetime.utcnow() - datetime(1970, 1, 1)).total_seconds() * 1000)))
 
     def _mark_data_received(self):
         """Mark that data was received, updating the connection health tracking."""
         self.last_data_received = datetime.now()
         _LOGGER.debug(f"Data received, updated last_data_received to {self.last_data_received}")
 
-    def async_handle_channel_info(self, client, userdata, message):
+    def async_handle_device_info(self, client, userdata, message):
+        """Handle channel info response for legacy devices."""
         response = json.loads(message.payload)
-        _LOGGER.debug(f"Channel info response: {response}")
+        _LOGGER.debug(f"Device info response: {response}")
         self._mark_data_received()
-        channel_info = response.get("response",{})
-        session_id = response.get("sessionID","unknown")
-        self.channels = {channel.get("channelNumber",0):NavilinkChannel(channel.get("channelNumber",0),channel.get("channel",{}),self) for channel in channel_info.get("channelInfo",{}).get("channelList",[])}
-        if response_event := self.response_events.get(session_id,None):
+        channel_info = response.get("response", {})
+        session_id = response.get("sessionID", "unknown")
+        
+        # Create NavilinkDevice for each channel, passing gateway info
+        self.devices = {}
+        for channel in channel_info.get("channelInfo", {}).get("channelList", []):
+            channel_number = channel.get("channelNumber", 0)
+            self.devices[channel_number] = NavilinkDevice(
+                channel_number=channel_number,
+                channel_info=channel.get("channel", {}),
+                gateway=self
+            )
+        
+        if response_event := self.response_events.get(session_id, None):
             response_event.set()
 
-    def handle_channel_info(self, client, userdata, message):
-        self.loop.call_soon_threadsafe(self.async_handle_channel_info, client, userdata, message)
+    def handle_device_info(self, client, userdata, message):
+        self.loop.call_soon_threadsafe(self.async_handle_device_info, client, userdata, message)
 
-    def async_handle_channel_status(self, client, userdata, message):
+    def async_handle_device_status(self, client, userdata, message):
+        """Handle channel status response for legacy devices."""
         response = json.loads(message.payload)
         self._mark_data_received()
-        channel_status = response.get("response",{}).get("channelStatus",{})
-        session_id = response.get("sessionID","unknown")
-        if channel := self.channels.get(channel_status.get("channelNumber",0),None):
-            channel.update_channel_status(channel_status.get("channel",{}))
-        if response_event := self.response_events.get(session_id,None):
+        channel_status = response.get("response", {}).get("channelStatus", {})
+        session_id = response.get("sessionID", "unknown")
+        if device := self.devices.get(channel_status.get("channelNumber", 0), None):
+            device.update_channel_status(channel_status.get("channel", {}))
+        if response_event := self.response_events.get(session_id, None):
             response_event.set()
 
-    def handle_channel_status(self, client, userdata, message):
-        self.loop.call_soon_threadsafe(self.async_handle_channel_status, client, userdata, message)
+    def handle_device_status(self, client, userdata, message):
+        self.loop.call_soon_threadsafe(self.async_handle_device_status, client, userdata, message)
 
     def handle_weekly_schedule(self, client, userdata, message):
         _LOGGER.info("WEEKLY SCHEDULE: " + message.payload.decode('utf-8') + '\n')
@@ -662,15 +783,14 @@ class NavilinkConnect():
         _LOGGER.debug("MGPP DID Response: " + json.dumps(response, indent=2))
         self._mark_data_received()
         session_id = response.get("sessionID", "unknown")
-        
-        # Store DID feature data in the channel for temperature conversion reference
-        if len(self.channels) > 0:
-            channel = list(self.channels.values())[0]
-            if hasattr(channel, 'did_features'):
+
+        if len(self.devices) > 0:
+            device = list(self.devices.values())[0]
+            if hasattr(device, 'did_features'):
                 feature_data = response.get("response", {}).get("feature", {})
-                channel.did_features = feature_data
+                device.did_features = feature_data
                 _LOGGER.debug(f"Stored DID feature data: {feature_data}")
-        
+
         if response_event := self.response_events.get(session_id, None):
             response_event.set()
         else:
@@ -689,13 +809,10 @@ class NavilinkConnect():
             _LOGGER.debug(f"Set response event for session ID: {session_id}")
         else:
             _LOGGER.debug(f"No response event found for session ID: {session_id}")
-        # Update channel if it exists
-        for channel in self.channels.values():
-            if hasattr(channel, 'update_channel_status'):
-                _LOGGER.debug(f"Updating channel {channel.channel_number} with status response")
-                channel.update_channel_status('status', response)
-            else:
-                _LOGGER.debug(f"Channel {channel.channel_number} does not have update_channel_status method")
+        for device in self.devices.values():
+            if hasattr(device, 'update_channel_status'):
+                _LOGGER.debug(f"Updating device {device.channel_number} with status response")
+                device.update_channel_status('status', response)
 
     def handle_mgpp_status(self, client, userdata, message):
         self.loop.call_soon_threadsafe(self.async_handle_mgpp_status, client, userdata, message)
@@ -709,10 +826,9 @@ class NavilinkConnect():
             response_event.set()
         else:
             _LOGGER.debug(f"No response event found for session ID: {session_id}")
-        # Update channel if it exists
-        for channel in self.channels.values():
-            if hasattr(channel, 'update_channel_status'):
-                channel.update_channel_status('rsv', response)
+        for device in self.devices.values():
+            if hasattr(device, 'update_channel_status'):
+                device.update_channel_status('rsv', response)
 
     def handle_mgpp_rsv(self, client, userdata, message):
         self.loop.call_soon_threadsafe(self.async_handle_mgpp_rsv, client, userdata, message)
@@ -734,13 +850,11 @@ class NavilinkConnect():
         """Handle MGPP connection heartbeat events per spec"""
         response = json.loads(message.payload)
         _LOGGER.debug("MGPP Connection Event: " + json.dumps(response, indent=2))
-        # Check if status indicates disconnect (status <= 0)
         event_data = response.get("event", {})
         connection = event_data.get("connection", {})
         status = connection.get("status", 0)
         if status <= 0:
             _LOGGER.warning("Device connection status indicates disconnect (status <= 0)")
-            # Could trigger disconnect handling here if needed
 
     def handle_mgpp_connection(self, client, userdata, message):
         self.loop.call_soon_threadsafe(self.async_handle_mgpp_connection, client, userdata, message)
@@ -748,7 +862,6 @@ class NavilinkConnect():
     def async_handle_mgpp_disconnect(self, client, userdata, message):
         """Handle MGPP disconnect broadcast per spec"""
         _LOGGER.warning("MGPP Disconnect Broadcast received - device MQTT session dropped")
-        # The spec indicates receipt alone triggers action - could force reconnection here
 
     def handle_mgpp_disconnect(self, client, userdata, message):
         self.loop.call_soon_threadsafe(self.async_handle_mgpp_disconnect, client, userdata, message)
@@ -756,140 +869,169 @@ class NavilinkConnect():
     def handle_other(self, client, userdata, message):
         _LOGGER.info(message.payload.decode('utf-8') + '\n')
 
-class NavilinkChannel:
 
-    def __init__(self, channel_number, channel_info, hub) -> None:
+class NavilinkDevice:
+    """Represents a single water heater device (legacy protocol)."""
+
+    def __init__(self, channel_number, channel_info, gateway) -> None:
         self.channel_number = channel_number
         self.channel_info = self.convert_channel_info(channel_info)
-        self.hub = hub
+        self.gateway = gateway
         self.callbacks = []
         self.channel_status = {}
         self.unit_list = {}
         self.waiting_for_response = False
 
-    def register_callback(self,callback):
+    @property
+    def mac_address(self):
+        """Get the MAC address of the gateway this device belongs to."""
+        return self.gateway.mac_address
+
+    @property
+    def device_name(self):
+        """Get the device name including channel number."""
+        base_name = self.gateway.device_name
+        return f"{base_name} CH{self.channel_number}"
+
+    @property
+    def device_identifier(self):
+        """Get the unique identifier for this device (used in device registry)."""
+        return f"{self.mac_address}_{self.channel_number}"
+
+    @property
+    def hub(self):
+        """Backwards compatibility alias for gateway."""
+        return self.gateway
+
+    def register_callback(self, callback):
         self.callbacks.append(callback)
 
-    def deregister_callback(self,callback):
+    def deregister_callback(self, callback):
         if self.callbacks:
             self.callbacks.pop(self.callbacks.index(callback))
 
-    def update_channel_status(self,channel_status):
+    def update_channel_status(self, channel_status):
         self.channel_status = self.convert_channel_status(channel_status)
         if not self.waiting_for_response:
             self.publish_update()
 
     def publish_update(self):
         if len(self.callbacks) > 0:
-            # Schedule callbacks on the main event loop to avoid threading issues
             for callback in self.callbacks:
-                self.hub.loop.call_soon_threadsafe(callback)
+                self.gateway.loop.call_soon_threadsafe(callback)
 
-    async def set_power_state(self,state):
+    async def set_power_state(self, state):
         if not self.waiting_for_response:
             self.waiting_for_response = True
             try:
-                await self.hub._power_command(state,self.channel_number)
+                await self.gateway._power_command(state, self.channel_number)
                 self.publish_update()
             finally:
                 self.waiting_for_response = False
 
-    async def set_hot_button_state(self,state):
+    async def set_hot_button_state(self, state):
         if not self.waiting_for_response:
             self.waiting_for_response = True
             try:
-                await self.hub._hot_button_command(state,self.channel_number)
+                await self.gateway._hot_button_command(state, self.channel_number)
                 self.publish_update()
             finally:
                 self.waiting_for_response = False
 
-    async def set_temperature(self,temp):
+    async def set_temperature(self, temp):
         if not self.waiting_for_response:
             self.waiting_for_response = True
             try:
-                await self.hub._temperature_command(temp,self.channel_number)
+                await self.gateway._temperature_command(temp, self.channel_number)
                 self.publish_update()
             finally:
                 self.waiting_for_response = False
 
-    def convert_channel_status(self,channel_status):
+    def convert_channel_status(self, channel_status):
         channel_status["powerStatus"] = channel_status["powerStatus"] == 1
         channel_status["onDemandUseFlag"] = channel_status["onDemandUseFlag"] == 1
-        channel_status["avgCalorie"] = channel_status["avgCalorie"]/2.0
-        if self.channel_info.get("temperatureType",2) == TemperatureType.CELSIUS.value:
-            if channel_status["unitType"] in [DeviceSorting.NFC.value,DeviceSorting.NCB_H.value,DeviceSorting.NFB.value,DeviceSorting.NVW.value,]:
+        channel_status["avgCalorie"] = channel_status["avgCalorie"] / 2.0
+        if self.channel_info.get("temperatureType", 2) == TemperatureType.CELSIUS.value:
+            if channel_status["unitType"] in [
+                DeviceSorting.NFC.value, DeviceSorting.NCB_H.value,
+                DeviceSorting.NFB.value, DeviceSorting.NVW.value,
+            ]:
                 GIUFactor = 100
             else:
                 GIUFactor = 10
 
             if channel_status["unitType"] in [
-                DeviceSorting.NPE.value,
-                DeviceSorting.NPN.value,
-                DeviceSorting.NPE2.value,
-                DeviceSorting.NCB.value,
-                DeviceSorting.NFC.value,
-                DeviceSorting.NCB_H.value,
-                DeviceSorting.CAS_NPE.value,
-                DeviceSorting.CAS_NPN.value,
-                DeviceSorting.CAS_NPE2.value,
-                DeviceSorting.NFB.value,
-                DeviceSorting.NVW.value,
-                DeviceSorting.CAS_NFB.value,
-                DeviceSorting.CAS_NVW.value,
+                DeviceSorting.NPE.value, DeviceSorting.NPN.value, DeviceSorting.NPE2.value,
+                DeviceSorting.NCB.value, DeviceSorting.NFC.value, DeviceSorting.NCB_H.value,
+                DeviceSorting.CAS_NPE.value, DeviceSorting.CAS_NPN.value, DeviceSorting.CAS_NPE2.value,
+                DeviceSorting.NFB.value, DeviceSorting.NVW.value,
+                DeviceSorting.CAS_NFB.value, DeviceSorting.CAS_NVW.value,
             ]:
                 channel_status["DHWSettingTemp"] = round(channel_status["DHWSettingTemp"] / 2.0, 1)
                 channel_status["avgInletTemp"] = round(channel_status["avgInletTemp"] / 2.0, 1)
-                channel_status["avgOutletTemp"] = round(channel_status["avgOutletTemp"] / 2.0, 1)            
-                for i in range(channel_status.get("unitCount",0)):
-                    channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] = round((channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] * GIUFactor)/ 10.0, 1)
-                    channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] = round(channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] / 10.0, 1)
-                    channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] = round(channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] / 10.0, 1)
-                    channel_status["unitInfo"]["unitStatusList"][i]["currentOutletTemp"] = round(channel_status["unitInfo"]["unitStatusList"][i]["currentOutletTemp"] / 2.0, 1)
-                    channel_status["unitInfo"]["unitStatusList"][i]["currentInletTemp"] = round(channel_status["unitInfo"]["unitStatusList"][i]["currentInletTemp"] / 2.0, 1)
-        elif self.channel_info.get("temperatureType",2) == TemperatureType.FAHRENHEIT.value:
-            if channel_status["unitType"] in [DeviceSorting.NFC.value,DeviceSorting.NCB_H.value,DeviceSorting.NFB.value,DeviceSorting.NVW.value,]:
+                channel_status["avgOutletTemp"] = round(channel_status["avgOutletTemp"] / 2.0, 1)
+                for i in range(channel_status.get("unitCount", 0)):
+                    channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] = round(
+                        (channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] * GIUFactor) / 10.0, 1
+                    )
+                    channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] = round(
+                        channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] / 10.0, 1
+                    )
+                    channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] = round(
+                        channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] / 10.0, 1
+                    )
+                    channel_status["unitInfo"]["unitStatusList"][i]["currentOutletTemp"] = round(
+                        channel_status["unitInfo"]["unitStatusList"][i]["currentOutletTemp"] / 2.0, 1
+                    )
+                    channel_status["unitInfo"]["unitStatusList"][i]["currentInletTemp"] = round(
+                        channel_status["unitInfo"]["unitStatusList"][i]["currentInletTemp"] / 2.0, 1
+                    )
+        elif self.channel_info.get("temperatureType", 2) == TemperatureType.FAHRENHEIT.value:
+            if channel_status["unitType"] in [
+                DeviceSorting.NFC.value, DeviceSorting.NCB_H.value,
+                DeviceSorting.NFB.value, DeviceSorting.NVW.value,
+            ]:
                 GIUFactor = 10
             else:
                 GIUFactor = 1
 
             if channel_status["unitType"] in [
-                DeviceSorting.NPE.value,
-                DeviceSorting.NPN.value,
-                DeviceSorting.NPE2.value,
-                DeviceSorting.NCB.value,
-                DeviceSorting.NFC.value,
-                DeviceSorting.NCB_H.value,
-                DeviceSorting.CAS_NPE.value,
-                DeviceSorting.CAS_NPN.value,
-                DeviceSorting.CAS_NPE2.value,
-                DeviceSorting.NFB.value,
-                DeviceSorting.NVW.value,
-                DeviceSorting.CAS_NFB.value,
-                DeviceSorting.CAS_NVW.value,
+                DeviceSorting.NPE.value, DeviceSorting.NPN.value, DeviceSorting.NPE2.value,
+                DeviceSorting.NCB.value, DeviceSorting.NFC.value, DeviceSorting.NCB_H.value,
+                DeviceSorting.CAS_NPE.value, DeviceSorting.CAS_NPN.value, DeviceSorting.CAS_NPE2.value,
+                DeviceSorting.NFB.value, DeviceSorting.NVW.value,
+                DeviceSorting.CAS_NFB.value, DeviceSorting.CAS_NVW.value,
             ]:
-                for i in range(channel_status.get("unitCount",0)):
-                    channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] = round(channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] * GIUFactor * 3.968, 1)
-                    channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] = round(channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] * 35.314667 / 10.0, 1)
-                    channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] = round(channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] / 37.85, 1)
+                for i in range(channel_status.get("unitCount", 0)):
+                    channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] = round(
+                        channel_status["unitInfo"]["unitStatusList"][i]["gasInstantUsage"] * GIUFactor * 3.968, 1
+                    )
+                    channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] = round(
+                        channel_status["unitInfo"]["unitStatusList"][i]["accumulatedGasUsage"] * 35.314667 / 10.0, 1
+                    )
+                    channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] = round(
+                        channel_status["unitInfo"]["unitStatusList"][i]["DHWFlowRate"] / 37.85, 1
+                    )
 
         return channel_status
 
-    def convert_channel_info(self,channel_info):
-        if channel_info.get("temperatureType",2) == TemperatureType.CELSIUS.value:
-            channel_info["setupDHWTempMin"] = round(channel_info["setupDHWTempMin"]/ 2.0, 1)
-            channel_info["setupDHWTempMax"] = round(channel_info["setupDHWTempMax"]/ 2.0, 1)
-
+    def convert_channel_info(self, channel_info):
+        if channel_info.get("temperatureType", 2) == TemperatureType.CELSIUS.value:
+            channel_info["setupDHWTempMin"] = round(channel_info["setupDHWTempMin"] / 2.0, 1)
+            channel_info["setupDHWTempMax"] = round(channel_info["setupDHWTempMax"] / 2.0, 1)
         return channel_info
-        
+
     def is_available(self):
-        return self.hub.connected
+        return self.gateway.connected
 
-class MgppChannel:
 
-    def __init__(self, channel_number, channel_info, hub, did_features=None) -> None:
+class MgppDevice:
+    """Represents a single MGPP water heater device."""
+
+    def __init__(self, channel_number, channel_info, gateway, did_features=None) -> None:
         self.channel_number = channel_number
         self.channel_info = self.convert_channel_info(channel_info)
-        self.hub = hub
+        self.gateway = gateway
         self.callbacks = []
         self.channel_status = {}
         self.raw_responses = {
@@ -899,12 +1041,33 @@ class MgppChannel:
         }
         self.did_features = did_features or {}
         self.waiting_for_response = False
-        self.vacation_days = 7  # Default vacation mode duration in days
+        self.vacation_days = 7
 
-    def register_callback(self,callback):
+    @property
+    def mac_address(self):
+        """Get the MAC address of the gateway this device belongs to."""
+        return self.gateway.mac_address
+
+    @property
+    def device_name(self):
+        """Get the device name (MGPP devices don't have channel numbers in name)."""
+        return self.gateway.device_name
+
+    @property
+    def device_identifier(self):
+        """Get the unique identifier for this device (used in device registry)."""
+        # MGPP devices use just MAC since there's only one device per gateway
+        return self.mac_address
+
+    @property
+    def hub(self):
+        """Backwards compatibility alias for gateway."""
+        return self.gateway
+
+    def register_callback(self, callback):
         self.callbacks.append(callback)
 
-    def deregister_callback(self,callback):
+    def deregister_callback(self, callback):
         if self.callbacks:
             self.callbacks.pop(self.callbacks.index(callback))
 
@@ -913,12 +1076,10 @@ class MgppChannel:
         self.raw_responses[response_type] = response_data
         _LOGGER.debug(f"MGPP {response_type.upper()} Response: {json.dumps(response_data, indent=2)}")
 
-        # Store raw status dictionary as-is; conversions will be handled by entities
         if response_type == 'status' and 'response' in response_data:
             status_data = response_data['response'].get('status', {})
             self.channel_status = status_data
         elif response_type == 'status':
-            # Fallback for unexpected structure: keep full payload
             self.channel_status = response_data
 
         if not self.waiting_for_response:
@@ -926,20 +1087,18 @@ class MgppChannel:
 
     def publish_update(self):
         if len(self.callbacks) > 0:
-            # Schedule callbacks on the main event loop to avoid threading issues
             for callback in self.callbacks:
-                self.hub.loop.call_soon_threadsafe(callback)
+                self.gateway.loop.call_soon_threadsafe(callback)
 
     async def set_power_state(self, state):
         """Set MGPP device power state"""
         if not self.waiting_for_response:
             self.waiting_for_response = True
             try:
-                await self.hub._mgpp_power_command(state, self.channel_number)
+                await self.gateway._mgpp_power_command(state, self.channel_number)
                 self.publish_update()
             finally:
                 self.waiting_for_response = False
-
 
     def _celsius_to_raw(self, celsius):
         """Convert Celsius to raw protocol value (half-degree encoding)"""
@@ -951,24 +1110,18 @@ class MgppChannel:
             self.waiting_for_response = True
             try:
                 raw_temp = self._celsius_to_raw(temp_celsius)
-                await self.hub._mgpp_temperature_command(raw_temp, self.channel_number)
+                await self.gateway._mgpp_temperature_command(raw_temp, self.channel_number)
                 self.publish_update()
             finally:
                 self.waiting_for_response = False
 
     async def set_operation_mode(self, mode, days=None):
-        """Set MGPP operation mode
-        
-        Args:
-            mode: Operation mode (5 for vacation mode)
-            days: Optional days parameter for vacation mode. If None, uses self.vacation_days
-        """
+        """Set MGPP operation mode"""
         if not self.waiting_for_response:
             self.waiting_for_response = True
             try:
-                # Use provided days or fall back to channel's stored value
                 vacation_days = days if days is not None else self.vacation_days
-                await self.hub._mgpp_operation_mode_command(mode, self.channel_number, vacation_days)
+                await self.gateway._mgpp_operation_mode_command(mode, self.channel_number, vacation_days)
                 self.publish_update()
             finally:
                 self.waiting_for_response = False
@@ -978,7 +1131,7 @@ class MgppChannel:
         if not self.waiting_for_response:
             self.waiting_for_response = True
             try:
-                await self.hub._mgpp_anti_legionella_command(state, self.channel_number)
+                await self.gateway._mgpp_anti_legionella_command(state, self.channel_number)
                 self.publish_update()
             finally:
                 self.waiting_for_response = False
@@ -988,7 +1141,7 @@ class MgppChannel:
         if not self.waiting_for_response:
             self.waiting_for_response = True
             try:
-                await self.hub._mgpp_freeze_protection_command(state, self.channel_number)
+                await self.gateway._mgpp_freeze_protection_command(state, self.channel_number)
                 self.publish_update()
             finally:
                 self.waiting_for_response = False
@@ -997,80 +1150,73 @@ class MgppChannel:
         """Get human-readable error message if device has errors"""
         if not self.channel_status.get('hasError', False):
             return None
-        
+
         error_code = self.channel_status.get('errorCode', 0)
         sub_error_code = self.channel_status.get('subErrorCode', 0)
         fault1 = self.channel_status.get('faultStatus1', 0)
         fault2 = self.channel_status.get('faultStatus2', 0)
-        
+
         if error_code != 0:
             return f"Error Code: {error_code} (Sub: {sub_error_code})"
         elif fault1 != 0 or fault2 != 0:
             return f"Fault Status: {fault1}, {fault2}"
-        
+
         return "Unknown error condition"
 
     def get_status_summary(self):
         """Get a summary of the current device status"""
         if not self.channel_status:
             return "No status data available"
-        
+
         status_parts = []
-        
-        # Power status
+
         if self.channel_status.get('powerStatus', False):
             status_parts.append("ON")
         else:
             status_parts.append("OFF")
-        
-        # Temperature
+
         temp = self.channel_status.get('dhwTemperature', 0)
         target_temp = self.channel_status.get('dhwTemperatureSetting', 0)
         status_parts.append(f"Temp: {temp}°F (Target: {target_temp}°F)")
-        
-        # Error status
+
         if self.channel_status.get('hasError', False):
             error_msg = self.get_error_message()
             status_parts.append(f"ERROR: {error_msg}")
-        
-        # Operation mode
+
         if self.channel_status.get('isHeating', False):
             status_parts.append("HEATING")
-        
-        # Eco mode
+
         if self.channel_status.get('isEcoMode', False):
             status_parts.append("ECO MODE")
-        
+
         return " | ".join(status_parts)
 
     def convert_channel_info(self, channel_info):
         """Convert channel info to include required fields for water_heater.py compatibility"""
-        # Add default temperature type if not present (default to Fahrenheit for MGPP devices)
         if "temperatureType" not in channel_info:
             channel_info["temperatureType"] = TemperatureType.FAHRENHEIT.value
-        
-        # Add default temperature ranges if not present
+
         if "setupDHWTempMin" not in channel_info:
-            channel_info["setupDHWTempMin"] = 100  # 100°F default minimum
+            channel_info["setupDHWTempMin"] = 100
         if "setupDHWTempMax" not in channel_info:
-            channel_info["setupDHWTempMax"] = 140  # 140°F default maximum
-        
-        # Convert temperature ranges if using Celsius
+            channel_info["setupDHWTempMax"] = 140
+
         if channel_info.get("temperatureType", TemperatureType.FAHRENHEIT.value) == TemperatureType.CELSIUS.value:
             channel_info["setupDHWTempMin"] = round(channel_info["setupDHWTempMin"] / 2.0, 1)
             channel_info["setupDHWTempMax"] = round(channel_info["setupDHWTempMax"] / 2.0, 1)
-        
+
         return channel_info
 
     def is_available(self):
-        return self.hub.connected
+        return self.gateway.connected
+
 
 class MgppTopics:
     def __init__(self, user_info, device_info, client_id) -> None:
-        self.user_seq = str(user_info.get("userInfo",{}).get("userSeq",""))
-        self.mac_address = device_info.get("deviceInfo",{}).get("macAddress","")
-        self.home_seq = str(device_info.get("deviceInfo",{}).get("homeSeq",""))
-        self.device_type = str(device_info.get("deviceInfo",{}).get("deviceType",""))
+        self.user_seq = str(user_info.get("userInfo", {}).get("userSeq", ""))
+        self.mac_address = device_info.get("deviceInfo", {}).get("macAddress", "")
+        self.home_seq = str(device_info.get("deviceInfo", {}).get("homeSeq", ""))
+        self.device_type = str(device_info.get("deviceInfo", {}).get("deviceType", ""))
         self.client_id = client_id
         self.req = f'cmd/{self.device_type}/navilink-{self.mac_address}/'
         self.res = f'cmd/{self.device_type}/{self.home_seq}/{self.user_seq}/{self.client_id}/res/'
@@ -1116,37 +1262,18 @@ class MgppTopics:
     def app_connection(self):
         return f'evt/{self.device_type}/navilink-{self.mac_address}/app-connection'
 
-    # other mgpp endpoints:
-    # st/energy-usage-daily-query/rd
-    # st/energy-usage-monthly-query/rd
 
 class Topics:
+    """Topics for legacy protocol devices."""
 
     def __init__(self, user_info, device_info, client_id) -> None:
-        self.user_seq = str(user_info.get("userInfo",{}).get("userSeq",""))
-        self.mac_address = device_info.get("deviceInfo",{}).get("macAddress","")
-        self.home_seq = str(device_info.get("deviceInfo",{}).get("homeSeq",""))
-        self.device_type = str(device_info.get("deviceInfo",{}).get("deviceType",""))
+        self.user_seq = str(user_info.get("userInfo", {}).get("userSeq", ""))
+        self.mac_address = device_info.get("deviceInfo", {}).get("macAddress", "")
+        self.home_seq = str(device_info.get("deviceInfo", {}).get("homeSeq", ""))
+        self.device_type = str(device_info.get("deviceInfo", {}).get("deviceType", ""))
         self.client_id = client_id
         self.req = f'cmd/{self.device_type}/navilink-{self.mac_address}/'
         self.res = f'cmd/{self.device_type}/{self.home_seq}/{self.user_seq}/{self.client_id}/res/'
-        self.mgpp = f'cmd/{self.device_type}/{self.home_seq}/{self.user_seq}/{self.client_id}/'
-
-    def mgpp_default(self):
-        return self.req + 'res'
-
-    def mgpp_res_did(self):
-        return self.mgpp + 'res/did'
-
-    def mgpp_res(self):
-        return self.mgpp + 'res'
-
-    def mgpp_res_rsv_rd(self):
-        return self.mgpp + 'res/rsv/rd'
-
-    # other mgpp endpoints:
-    # st/energy-usage-daily-query/rd
-    # st/energy-usage-monthly-query/rd
 
     def start(self):
         return self.req + 'status/start'
@@ -1156,10 +1283,10 @@ class Topics:
 
     def channel_info_res(self):
         return self.res + 'channelinfo'
-    
+
     def control_fail(self):
         return self.req + 'res/controlfail'
-    
+
     def channel_status_sub(self):
         return self.req + 'res/channelstatus'
 
@@ -1226,12 +1353,13 @@ class Topics:
     def app_connection(self):
         return f'evt/1/navilink-{self.mac_address}/app-connection'
 
+
 class MgppMessages:
 
     def __init__(self, device_info, client_id, topics) -> None:
-        self.mac_address = device_info.get("deviceInfo",{}).get("macAddress","")
-        self.device_type = int(device_info.get("deviceInfo",{}).get("deviceType",1))
-        self.additional_value = device_info.get("deviceInfo",{}).get("additionalValue","")   
+        self.mac_address = device_info.get("deviceInfo", {}).get("macAddress", "")
+        self.device_type = int(device_info.get("deviceInfo", {}).get("deviceType", 1))
+        self.additional_value = device_info.get("deviceInfo", {}).get("additionalValue", "")
         self.client_id = client_id
         self.topics = topics
 
@@ -1282,7 +1410,6 @@ class MgppMessages:
 
     def mgpp_power(self, state, channel_number):
         """MGPP power control message - uses RequestMgppControl structure per spec"""
-        # POWER_OFF = 33554433, POWER_ON = 33554434 per spec
         command_id = 33554434 if state else 33554433
         mode_str = "power-on" if state else "power-off"
         return {
@@ -1304,14 +1431,12 @@ class MgppMessages:
 
     def mgpp_temperature(self, temp, channel_number):
         """MGPP temperature control message - uses RequestMgppControl structure per spec"""
-        # DHW_TEMPERATURE = 33554464 per spec
-        # temp is already encoded (half-degree Celsius: celsius * 2)
         return {
             "clientID": self.client_id,
             "protocolVersion": 2,
             "request": {
                 "additionalValue": self.additional_value,
-                "command": 33554464,  # DHW_TEMPERATURE per spec
+                "command": 33554464,
                 "deviceType": self.device_type,
                 "macAddress": self.mac_address,
                 "mode": "dhw-temperature",
@@ -1324,18 +1449,9 @@ class MgppMessages:
         }
 
     def mgpp_operation_mode(self, mode, channel_number, days=None):
-        """MGPP operation mode control message - uses RequestMgppControl structure per spec
-        
-        Args:
-            mode: Operation mode (5 for vacation mode)
-            channel_number: Channel number (unused but kept for API consistency)
-            days: Optional days parameter for vacation mode. If None and mode is 5, defaults to 7
-        """
-        # DHW_OPERATION_MODE = 33554437 per spec
-        # If mode is VACATION (5), include days parameter
+        """MGPP operation mode control message - uses RequestMgppControl structure per spec"""
         param = [mode]
-        if mode == 5:  # VACATION mode requires days parameter
-            # Use provided days or default to 7 days
+        if mode == 5:
             vacation_days = days if days is not None else 7
             param = [mode, vacation_days]
         return {
@@ -1343,7 +1459,7 @@ class MgppMessages:
             "protocolVersion": 2,
             "request": {
                 "additionalValue": self.additional_value,
-                "command": 33554437,  # DHW_OPERATION_MODE per spec
+                "command": 33554437,
                 "deviceType": self.device_type,
                 "macAddress": self.mac_address,
                 "mode": "dhw-mode",
@@ -1357,10 +1473,8 @@ class MgppMessages:
 
     def mgpp_anti_legionella(self, state, channel_number):
         """MGPP anti-legionella control message - uses RequestMgppControl structure per spec"""
-        # ANTI_LEGIONELLA_OFF = 33554471, ANTI_LEGIONELLA_ON = 33554472 per spec
         command_id = 33554472 if state else 33554471
         mode_str = "anti-leg-on" if state else "anti-leg-off"
-        # If enabling, include period parameter (default 7 days)
         param = [7] if state else []
         return {
             "clientID": self.client_id,
@@ -1381,17 +1495,13 @@ class MgppMessages:
 
     def mgpp_freeze_protection(self, state, channel_number):
         """MGPP freeze protection control message - uses RequestMgppControl structure per spec"""
-        # Note: FREZ_TEMP = 33554451 per spec, but no handler defined in app
-        # This may need to be implemented differently - using a generic control structure
-        # For now, using a placeholder command ID as freeze protection control isn't fully documented
-        # The spec shows FREZ_TEMP exists but has no handler
-        state_value = 2 if state else 1  # MGPP uses 1=off, 2=on
+        state_value = 2 if state else 1
         return {
             "clientID": self.client_id,
             "protocolVersion": 2,
             "request": {
                 "additionalValue": self.additional_value,
-                "command": 33554451,  # FREZ_TEMP per spec (though no handler in app)
+                "command": 33554451,
                 "deviceType": self.device_type,
                 "macAddress": self.mac_address,
                 "mode": "freeze-protection",
@@ -1403,7 +1513,6 @@ class MgppMessages:
             "sessionID": ""
         }
 
-
     def last_will(self):
         """Last Will message - uses protocolVersion 1 per spec"""
         return {
@@ -1414,35 +1523,51 @@ class MgppMessages:
                 "deviceType": self.device_type,
                 "macAddress": self.mac_address
             },
-            "protocolVersion": 1,  # Last Will uses protocolVersion 1 per spec
+            "protocolVersion": 1,
             "requestTopic": self.topics.app_connection(),
             "sessionID": ""
         }
 
+
 class Messages:
 
     def __init__(self, device_info, client_id, topics) -> None:
-        self.mac_address = device_info.get("deviceInfo",{}).get("macAddress","")
-        self.device_type = int(device_info.get("deviceInfo",{}).get("deviceType",1))
-        self.additional_value = device_info.get("deviceInfo",{}).get("additionalValue","")   
+        self.mac_address = device_info.get("deviceInfo", {}).get("macAddress", "")
+        self.device_type = int(device_info.get("deviceInfo", {}).get("deviceType", 1))
+        self.additional_value = device_info.get("deviceInfo", {}).get("additionalValue", "")
         self.client_id = client_id
         self.topics = topics
 
     def channel_info(self):
         return {
             "clientID": self.client_id,
-            "protocolVersion":1,
-            "request":{"additionalValue":self.additional_value,"command":16777217,"deviceType":self.device_type,"macAddress":self.mac_address},
-            "requestTopic":self.topics.start(),
-            "responseTopic":self.topics.channel_info_res(),
-            "sessionID":""
+            "protocolVersion": 1,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 16777217,
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address
+            },
+            "requestTopic": self.topics.start(),
+            "responseTopic": self.topics.channel_info_res(),
+            "sessionID": ""
         }
 
-    def channel_status(self,channel_number,unit_count):
+    def channel_status(self, channel_number, unit_count):
         return {
             "clientID": self.client_id,
-            "protocolVersion":1,
-            "request":{"additionalValue":self.additional_value,"command":16777220,"deviceType":self.device_type,"macAddress":self.mac_address,"status":{"channelNumber":channel_number,"unitNumberEnd":unit_count,"unitNumberStart":1}},
+            "protocolVersion": 1,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 16777220,
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address,
+                "status": {
+                    "channelNumber": channel_number,
+                    "unitNumberEnd": unit_count,
+                    "unitNumberStart": 1
+                }
+            },
             "requestTopic": self.topics.channel_status_req(),
             "responseTopic": self.topics.channel_status_res(),
             "sessionID": ""
@@ -1451,8 +1576,18 @@ class Messages:
     def power(self, state, channel_number):
         return {
             "clientID": self.client_id,
-            "protocolVersion":1,
-            "request":{"additionalValue":self.additional_value,"command":33554433,"control":{"channelNumber":channel_number,"mode":"power","param":[state]},"deviceType":self.device_type,"macAddress":self.mac_address},
+            "protocolVersion": 1,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 33554433,
+                "control": {
+                    "channelNumber": channel_number,
+                    "mode": "power",
+                    "param": [state]
+                },
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address
+            },
             "requestTopic": self.topics.control(),
             "responseTopic": self.topics.channel_status_res(),
             "sessionID": ""
@@ -1461,8 +1596,18 @@ class Messages:
     def hot_button(self, state, channel_number):
         return {
             "clientID": self.client_id,
-            "protocolVersion":1,
-            "request":{"additionalValue":self.additional_value,"command":33554437,"control":{"channelNumber":channel_number,"mode":"onDemand","param":[state]},"deviceType":self.device_type,"macAddress":self.mac_address},
+            "protocolVersion": 1,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 33554437,
+                "control": {
+                    "channelNumber": channel_number,
+                    "mode": "onDemand",
+                    "param": [state]
+                },
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address
+            },
             "requestTopic": self.topics.control(),
             "responseTopic": self.topics.channel_status_res(),
             "sessionID": ""
@@ -1471,8 +1616,18 @@ class Messages:
     def temperature(self, temp, channel_number):
         return {
             "clientID": self.client_id,
-            "protocolVersion":1,
-            "request":{"additionalValue":self.additional_value,"command":33554435,"control":{"channelNumber":channel_number,"mode":"DHWTemperature","param":[temp]},"deviceType":self.device_type,"macAddress":self.mac_address},
+            "protocolVersion": 1,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 33554435,
+                "control": {
+                    "channelNumber": channel_number,
+                    "mode": "DHWTemperature",
+                    "param": [temp]
+                },
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address
+            },
             "requestTopic": self.topics.control(),
             "responseTopic": self.topics.channel_status_res(),
             "sessionID": ""
@@ -1481,11 +1636,17 @@ class Messages:
     def last_will(self):
         return {
             "clientID": self.client_id,
-            "event":{"additionalValue":self.additional_value,"connection":{"os":"A","status":0},"deviceType":self.device_type,"macAddress":self.mac_address},
-            "protocolVersion":1,
+            "event": {
+                "additionalValue": self.additional_value,
+                "connection": {"os": "A", "status": 0},
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address
+            },
+            "protocolVersion": 1,
             "requestTopic": self.topics.app_connection(),
             "sessionID": ""
         }
+
 
 class DeviceSorting(enum.Enum):
     NO_DEVICE = 0
@@ -1511,32 +1672,47 @@ class TemperatureType(enum.Enum):
     CELSIUS = 1
     FAHRENHEIT = 2
 
+
+# Backwards compatibility aliases
+NavilinkChannel = NavilinkDevice
+MgppChannel = MgppDevice
+
+
 class UnableToConnect(Exception):
     """Unable to connect to Navien Server Error"""
+
 
 class UserNotFound(Exception):
     """Bad User Credentials Error"""
 
+
 class NoNavienDevices(Exception):
     """No Navien Devices Found Error"""
+
 
 class NoNetworkConnection(Exception):
     """Network is unavailable"""
 
+
 class NoResponseData(Exception):
     """No Data in Response"""
+
 
 class PollingError(Exception):
     """Error during polling"""
 
+
 class DisconnectEvent(Exception):
     """Server disconnected"""
+
 
 class StaleConnectionError(Exception):
     """Connection is stale - no data received"""
 
+
 class NoChannelInformation(Exception):
     """No Channel Information"""
+
 
 class NoAccessKey(Exception):
     """Access key, Secret key, or Session token missing"""

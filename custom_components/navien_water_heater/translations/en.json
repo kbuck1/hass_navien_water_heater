@@ -7,25 +7,19 @@
           "password": "Password"
         },
         "title": "NaviLink Credentials",
-        "description": "Please enter your NaviLink account credentials"
-      },
-      "pick_gateway": {
-        "data": {
-          "gatewayID": "NaviLink Device"
-        },
-        "title": "Select NaviLink Device",
-        "description": "Please select the NaviLink device you would like to set up. Listed below are the names you assigend to your NaviLink hub when you set it up."
+        "description": "Please enter your NaviLink account credentials. All devices associated with this account will be automatically discovered."
       },
       "set_polling_interval": {
         "data": {
           "polling_interval": "Polling Interval"
         },
         "title": "NaviLink Polling Interval",
-        "description": "Indicate how often you would like to poll the NaviLink Hub (Minumum allowed interval is 10 seconds, maximum is 120 seconds.)"
+        "description": "Indicate how often you would like to poll the NaviLink devices (Minimum allowed interval is 10 seconds, maximum is 120 seconds.)"
       }
     },
     "error": {
       "invalid_auth": "Invalid NaviLink user credentials",
+      "no_devices": "No devices found with the provided credentials",
       "unknown": "Unknown error"
     },
     "abort": {

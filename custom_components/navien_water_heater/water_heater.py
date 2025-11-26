@@ -9,17 +9,21 @@ from homeassistant.components.water_heater import (
 )
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_TEMPERATURE, STATE_OFF, UnitOfTemperature
+from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.entity import DeviceInfo
-from .navien_api import TemperatureType
+
+from .entity import NavienBaseEntity
+from .navien_api import MgppDevice
+from .water_heater_mgpp import NavienWaterHeaterMgppEntity
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
 SUPPORT_FLAGS = (
-    WaterHeaterEntityFeature.AWAY_MODE | WaterHeaterEntityFeature.TARGET_TEMPERATURE | WaterHeaterEntityFeature.OPERATION_MODE
+    WaterHeaterEntityFeature.AWAY_MODE 
+    | WaterHeaterEntityFeature.TARGET_TEMPERATURE 
+    | WaterHeaterEntityFeature.OPERATION_MODE
 )
 
 
@@ -27,61 +31,34 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up Navien water heater based on a config entry."""
-    navilink = hass.data[DOMAIN][entry.entry_id]
-    # Delegate to MGPP-specific implementation when appropriate
-    try:
-        if getattr(navilink, "is_mgpp", False):
-            from .water_heater_mgpp import async_setup_entry_mgpp
-            await async_setup_entry_mgpp(hass, entry, async_add_entities)
-            return
-    except Exception:
-        pass
-
-    devices = []
-    for channel in navilink.channels.values():
-        devices.append(NavienWaterHeaterEntity(hass, channel, navilink))
-    async_add_entities(devices)
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    
+    entities = []
+    for device in coordinator.devices.values():
+        if isinstance(device, MgppDevice):
+            entities.append(NavienWaterHeaterMgppEntity(device))
+        else:
+            entities.append(NavienWaterHeaterEntity(device))
+    
+    async_add_entities(entities)
 
 
-class NavienWaterHeaterEntity(WaterHeaterEntity):
+class NavienWaterHeaterEntity(NavienBaseEntity, WaterHeaterEntity):
     """Define a Navien water heater."""
 
-    def __init__(self, hass, channel, navilink):
-        self.hass = hass
-        self.channel = channel
-        self.navilink = navilink
-
-    @property
-    def available(self):
-        """Return if the the device is online or not."""
-        return self.channel.is_available()
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device registry information for this entity."""
-        return DeviceInfo(
-            identifiers = {(DOMAIN, self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + "_" + str(self.channel.channel_number))},
-            manufacturer = "Navien",
-            name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown") + " CH" + str(self.channel.channel_number),
-        )
+    def __init__(self, device):
+        """Initialize the water heater entity."""
+        super().__init__(device)
 
     @property
     def name(self):
         """Return the name of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " CH" + str(self.channel.channel_number)
+        return self._device.device_name
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + str(self.channel.channel_number)
-
-    async def async_added_to_hass(self) -> None:
-        """Run when this Entity has been added to HA."""
-        self.channel.register_callback(self.async_write_ha_state)
-
-    async def async_will_remove_from_hass(self) -> None:
-        """Entity being removed from hass."""
-        self.channel.deregister_callback(self.async_write_ha_state)
+        return f"{self._device.device_identifier}_water_heater"
 
     @property
     def temperature_unit(self):
@@ -91,7 +68,7 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
     @property
     def is_away_mode_on(self):
         """Return true if away mode is on."""
-        return not self.channel.channel_status.get("powerStatus", False)
+        return not self._device.channel_status.get("powerStatus", False)
 
     @property
     def supported_features(self):
@@ -101,69 +78,65 @@ class NavienWaterHeaterEntity(WaterHeaterEntity):
     @property
     def current_operation(self):
         """Return current operation."""
-        return STATE_GAS if self.channel.channel_status.get("powerStatus", False) else STATE_OFF
+        return STATE_GAS if self._device.channel_status.get("powerStatus", False) else STATE_OFF
 
     @property
     def operation_list(self):
         """List of available operation modes."""
         return [STATE_OFF, STATE_GAS]
-    
+
     @property
     def current_temperature(self):
         """Return the current hot water temperature."""
-        # Legacy: get from unitInfo structure
-        unit_list = self.channel.channel_status.get("unitInfo",{}).get("unitStatusList",[])
+        unit_list = self._device.channel_status.get("unitInfo", {}).get("unitStatusList", [])
         if len(unit_list) > 0:
-            return round(sum([unit_info.get("currentOutletTemp") for unit_info in unit_list])/len(unit_list))
+            return round(sum([unit_info.get("currentOutletTemp") for unit_info in unit_list]) / len(unit_list))
         else:
             _LOGGER.warning("No channel status information available for " + self.name)
 
     @property
     def target_temperature(self):
         """Return the temperature we try to reach."""
-        # Legacy: use DHWSettingTemp field
-        return self.channel.channel_status.get("DHWSettingTemp", 0)
+        return self._device.channel_status.get("DHWSettingTemp", 0)
 
     @property
     def target_temperature_step(self):
         """Returns the step size setting for temperature."""
-        return 0.5;
+        return 0.5
 
     @property
     def min_temp(self):
         """Return the minimum temperature."""
-        return self.channel.channel_info.get("setupDHWTempMin",0)
+        return self._device.channel_info.get("setupDHWTempMin", 0)
 
     @property
     def max_temp(self):
         """Return the maximum temperature."""
-        return self.channel.channel_info.get("setupDHWTempMax",0)
+        return self._device.channel_info.get("setupDHWTempMax", 0)
 
     async def async_set_temperature(self, **kwargs):
         """Set target water temperature"""
         target_temp = kwargs.get(ATTR_TEMPERATURE)
         # Legacy: expects raw value (half-degree celsius)
-        await self.channel.set_temperature(target_temp * 2)
-
+        await self._device.set_temperature(target_temp * 2)
 
     async def async_turn_away_mode_on(self):
         """Turn away mode on."""
-        await self.channel.set_power_state(False)
+        await self._device.set_power_state(False)
 
     async def async_turn_away_mode_off(self):
         """Turn away mode off."""
-        await self.channel.set_power_state(True)
+        await self._device.set_power_state(True)
 
     async def async_set_operation_mode(self, operation_mode):
         """Set operation mode"""
-        # Legacy: only supports on/off
         power_state = operation_mode == STATE_GAS
-        await self.channel.set_power_state(power_state)
+        await self._device.set_power_state(power_state)
 
     async def async_turn_on(self):
         """Turn the water heater on."""
-        await self.channel.set_power_state(True)
+        await self._device.set_power_state(True)
 
     async def async_turn_off(self):
         """Turn the water heater off."""
-        await self.channel.set_power_state(False)
+        await self._device.set_power_state(False)

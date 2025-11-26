@@ -5,7 +5,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
 from .const import DOMAIN
-from .navien_api import NavilinkConnect
+from .navien_api import NavilinkAccountCoordinator
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -16,21 +16,20 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 
 STEP_SET_POLLING_INTERVAL = vol.Schema(
     {
-        vol.Required("polling_interval",default=15): vol.All(vol.Coerce(int), vol.Range(min=10, max=120))
+        vol.Required("polling_interval", default=15): vol.All(vol.Coerce(int), vol.Range(min=10, max=120))
     }
 )
+
 
 class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for NaviLink."""
 
+    VERSION = 2
+
     def __init__(self):
         self.username = ''
         self.password = ''
-        self.device_info = None
-        self.device_index = 0
-        self.polling_interval = 30
-
-    VERSION = 1
+        self.polling_interval = 15
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -44,53 +43,62 @@ class NavienConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         try:
-            navien = NavilinkConnect(user_input['username'],user_input['password'],polling_interval=0)
-            self.device_info = await navien.login()
+            # Use NavilinkAccountCoordinator for validation (accepts userId and passwd)
+            coordinator = NavilinkAccountCoordinator(
+                userId=user_input['username'],
+                passwd=user_input['password'],
+                polling_interval=0  # 0 means just login, don't start polling
+            )
+            device_list = await coordinator.login()
+            if not device_list:
+                errors["base"] = "no_devices"
         except Exception:  # pylint: disable=broad-except
             errors["base"] = "invalid_auth"
         else:
-            self.username = user_input['username']
-            self.password = user_input['password']
-            return await self.async_step_pick_gateway()
+            if not errors:
+                self.username = user_input['username']
+                self.password = user_input['password']
+                return await self.async_step_set_polling_interval()
 
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
         )
 
-    async def async_step_pick_gateway(
+    async def async_step_set_polling_interval(
         self, user_input=None
     ) -> FlowResult:
-        """Handle choosing the gateway."""
-        if user_input is None:
-            return self.async_show_form(
-                step_id="pick_gateway", data_schema= vol.Schema(
-                    {
-                        vol.Required("gatewayID", default=0): vol.In(
-                            {
-                                self.device_info.index(device):device.get("deviceInfo",{}).get("deviceName","UKNOWN") for device in self.device_info
-                            }
-                        ),
-                    }
-                )
-            )
-
-        self.device_index = user_input["gatewayID"]
-        return await self.async_step_set_polling_interval()
-
-    async def async_step_set_polling_interval(
-        self, user_input = None
-    ) -> FlowResult:
-        """Handle polling interval for this gateway."""
+        """Handle polling interval for this account."""
         if user_input is None:
             return self.async_show_form(
                 step_id="set_polling_interval", data_schema=STEP_SET_POLLING_INTERVAL
             )
 
-        title = 'navien_' + self.username + '_' + self.device_info[self.device_index].get("deviceInfo",{}).get("macAddress","UNKNOWN")
-        existing_entry = await self.async_set_unique_id(title)
-        if not existing_entry:
-            return self.async_create_entry(title=title, data={"username":self.username, "password":self.password, "device_index":self.device_index, "polling_interval":user_input["polling_interval"]})
-        else:
-            self.hass.config_entries.async_update_entry(existing_entry, data={"username":self.username, "password":self.password, "device_index":self.device_index, "polling_interval":user_input["polling_interval"]})
-            await self.hass.config_entries.async_reload(existing_entry.entry_id)
-            return self.async_abort(reason="reauth_successful")
+        # Use username as unique identifier for the account
+        unique_id = f'navien_{self.username}'
+        await self.async_set_unique_id(unique_id)
+        
+        # Check if entry with this unique_id already exists
+        existing_entry = self._async_current_entries()
+        for entry in existing_entry:
+            if entry.unique_id == unique_id:
+                # Update existing entry
+                self.hass.config_entries.async_update_entry(
+                    entry,
+                    data={
+                        "username": self.username,
+                        "password": self.password,
+                        "polling_interval": user_input["polling_interval"]
+                    }
+                )
+                await self.hass.config_entries.async_reload(entry.entry_id)
+                return self.async_abort(reason="reauth_successful")
+        
+        # Create new entry
+        return self.async_create_entry(
+            title=unique_id,
+            data={
+                "username": self.username,
+                "password": self.password,
+                "polling_interval": user_input["polling_interval"]
+            }
+        )

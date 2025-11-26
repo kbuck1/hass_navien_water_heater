@@ -4,10 +4,11 @@ from homeassistant.components.binary_sensor import (
     BinarySensorEntity,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from .navien_api import MgppChannel
+
+from .entity import NavienBaseEntity
+from .navien_api import MgppDevice
 from .const import DOMAIN
 import logging
 
@@ -18,75 +19,49 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up Navien binary sensors based on a config entry."""
-    navilink = hass.data[DOMAIN][entry.entry_id]
+    coordinator = hass.data[DOMAIN][entry.entry_id]
     sensors = []
-    for channel in navilink.channels.values():
-        if isinstance(channel, MgppChannel):
-            # One set of MGPP diagnostic sensors - disabled by default
+    
+    for device in coordinator.devices.values():
+        if isinstance(device, MgppDevice):
+            # MGPP diagnostic sensors - disabled by default
             sensors.extend([
-                MgppBinarySensor(navilink, channel, 'heatUpperUse', 'Upper Heating Element',
+                MgppBinarySensor(device, 'heatUpperUse', 'Upper Heating Element',
                                 device_class=BinarySensorDeviceClass.HEAT, enabled_default=False),
-                MgppBinarySensor(navilink, channel, 'heatLowerUse', 'Lower Heating Element',
+                MgppBinarySensor(device, 'heatLowerUse', 'Lower Heating Element',
                                 device_class=BinarySensorDeviceClass.HEAT, enabled_default=False),
-                MgppBinarySensor(navilink, channel, 'compUse', 'Heat Pump Compressor',
+                MgppBinarySensor(device, 'compUse', 'Heat Pump Compressor',
                                 device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False),
-                MgppBinarySensor(navilink, channel, 'evaFanUse', 'Evaporator Fan',
+                MgppBinarySensor(device, 'evaFanUse', 'Evaporator Fan',
                                 device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False),
-                MgppBinarySensor(navilink, channel, 'eevUse', 'Electronic Expansion Valve',
+                MgppBinarySensor(device, 'eevUse', 'Electronic Expansion Valve',
                                 device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False),
-                MgppBinarySensor(navilink, channel, 'operationBusy', 'System Heating',
+                MgppBinarySensor(device, 'operationBusy', 'System Heating',
                                 device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False),
             ])
+    
     async_add_entities(sensors)
 
 
-class MgppBinarySensor(BinarySensorEntity):
+class MgppBinarySensor(NavienBaseEntity, BinarySensorEntity):
     """Representation of an MGPP diagnostic binary sensor"""
 
-    def __init__(self, navilink, channel, sensor_key, name, device_class=None, enabled_default=True):
-        self.navilink = navilink
-        self.channel = channel
+    def __init__(self, device, sensor_key, name, device_class=None, enabled_default=True):
+        super().__init__(device)
         self.sensor_key = sensor_key
         self._name = name
         self._device_class = device_class
         self._enabled_default = enabled_default
 
-    async def async_added_to_hass(self) -> None:
-        """Run when this Entity has been added to HA."""
-        self.channel.register_callback(self.update_state)
-
-    async def async_will_remove_from_hass(self) -> None:
-        """Entity being removed from hass."""
-        self.channel.deregister_callback(self.update_state)
-
-    def update_state(self):
-        self.async_write_ha_state()
-
-    @property
-    def available(self):
-        """Return if the the sensor is online or not."""
-        return self.channel.is_available()
-
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device registry information for this entity."""
-        mac = self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown")
-        name = self.navilink.device_info.get("deviceInfo",{}).get("deviceName","unknown")
-        return DeviceInfo(
-            identifiers = {(DOMAIN, mac)},
-            manufacturer = "Navien",
-            name = name,
-        )
-
     @property
     def name(self):
         """Return the name of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("deviceName","UNKNOWN") + " " + self._name
+        return f"{self._device.device_name} {self._name}"
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return self.navilink.device_info.get("deviceInfo",{}).get("macAddress","unknown") + self.sensor_key
+        return f"{self._device.device_identifier}_{self.sensor_key}"
 
     @property
     def device_class(self) -> BinarySensorDeviceClass:
@@ -97,7 +72,7 @@ class MgppBinarySensor(BinarySensorEntity):
     def is_on(self):
         """Return the state of the sensor."""
         # MGPP typically uses 1=off, 2=on for status flags
-        return self.channel.channel_status.get(self.sensor_key, 0) == 2
+        return self._device.channel_status.get(self.sensor_key, 0) == 2
 
     @property
     def entity_registry_enabled_default(self):
