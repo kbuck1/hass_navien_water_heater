@@ -151,14 +151,11 @@ async def async_setup_entry(
 class NavienAvgCalorieSensor(NavienBaseEntity, SensorEntity):
     """Representation of a Navien Sensor device."""
 
+    _attr_name = "Heating Power"
+
     def __init__(self, device):
         """Initialize the sensor."""
         super().__init__(device)
-
-    @property
-    def name(self):
-        """Return the name of the entity."""
-        return f"{self._device.device_name} Heating Power"
 
     @property
     def unique_id(self):
@@ -197,6 +194,11 @@ class NavienSensor(NavienBaseEntity, SensorEntity):
         self.sensor_description = sensor_description
         self.unit_number = unit_info.get("unitNumber", "")
         self.hass = hass
+        # Set name based on unit number
+        if self.unit_number:
+            self._attr_name = f"Unit {self.unit_number} {sensor_description.name}"
+        else:
+            self._attr_name = sensor_description.name
 
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
@@ -206,16 +208,12 @@ class NavienSensor(NavienBaseEntity, SensorEntity):
             if unit_info.get("unitNumber", "") == self.unit_number:
                 self.unit_info = unit_info
         self.sensor_description = get_description(hass_units, navien_units, self.sensor_type)
-        self.async_write_ha_state()
-
-    @property
-    def name(self):
-        """Return the name of the entity."""
-        base_name = self._device.device_name
-        if unit_number := self.unit_info.get("unitNumber", None):
-            return f"{base_name} Unit {unit_number} {self.sensor_description.name}"
+        # Update name in case sensor_description.name changed
+        if self.unit_number:
+            self._attr_name = f"Unit {self.unit_number} {self.sensor_description.name}"
         else:
-            return f"{base_name} {self.sensor_description.name}"
+            self._attr_name = self.sensor_description.name
+        self.async_write_ha_state()
 
     @property
     def unique_id(self):
@@ -250,16 +248,11 @@ class MgppSensor(NavienBaseEntity, SensorEntity):
                  unit=None, state_class=None, enabled_default=True):
         super().__init__(device)
         self.sensor_key = sensor_key
-        self._name = name
+        self._attr_name = name
         self._device_class = device_class
         self._unit = unit
         self._state_class = state_class
         self._enabled_default = enabled_default
-
-    @property
-    def name(self):
-        """Return the name of the entity."""
-        return f"{self._device.device_name} {self._name}"
 
     @property
     def unique_id(self):

@@ -6,6 +6,8 @@ from .const import DOMAIN
 class NavienBaseEntity(Entity):
     """Base class for Navien entities."""
 
+    _attr_has_entity_name = True
+
     def __init__(self, device) -> None:
         """Initialize the base entity.
         
@@ -13,6 +15,11 @@ class NavienBaseEntity(Entity):
             device: NavilinkDevice or MgppDevice instance
         """
         self._device = device
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device.device_identifier)},
+            manufacturer="Navien",
+            name=device.device_name,
+        )
 
     @property
     def device(self):
@@ -24,14 +31,6 @@ class NavienBaseEntity(Entity):
         """Return if the device is online or not."""
         return self._device.is_available()
 
-    @property
-    def device_info(self) -> DeviceInfo:
-        """Return device registry information for this entity."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._device.device_identifier)},
-            manufacturer="Navien",
-            name=self._device.device_name,
-        )
 
     async def async_added_to_hass(self) -> None:
         """Run when this Entity has been added to HA."""

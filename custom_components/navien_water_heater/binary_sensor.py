@@ -49,14 +49,9 @@ class MgppBinarySensor(NavienBaseEntity, BinarySensorEntity):
     def __init__(self, device, sensor_key, name, device_class=None, enabled_default=True):
         super().__init__(device)
         self.sensor_key = sensor_key
-        self._name = name
+        self._attr_name = name
         self._device_class = device_class
         self._enabled_default = enabled_default
-
-    @property
-    def name(self):
-        """Return the name of the entity."""
-        return f"{self._device.device_name} {self._name}"
 
     @property
     def unique_id(self):

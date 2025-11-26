@@ -33,14 +33,11 @@ async def async_setup_entry(
 class NavienOnDemandSwitchEntity(NavienBaseEntity, SwitchEntity):
     """Define a Navien Hot Button/On Demand/External Recirculator Entity."""
 
+    _attr_name = "Hot Button"
+
     def __init__(self, device):
         """Initialize the entity."""
         super().__init__(device)
-
-    @property
-    def name(self):
-        """Return the name of the entity."""
-        return f"{self._device.device_name} Hot Button"
 
     @property
     def unique_id(self):
@@ -64,14 +61,11 @@ class NavienOnDemandSwitchEntity(NavienBaseEntity, SwitchEntity):
 class NavienPowerSwitchEntity(NavienBaseEntity, SwitchEntity):
     """Define a Power Switch Entity."""
 
+    _attr_name = "Power"
+
     def __init__(self, device):
         """Initialize the entity."""
         super().__init__(device)
-
-    @property
-    def name(self):
-        """Return the name of the entity."""
-        return f"{self._device.device_name} Power"
 
     @property
     def unique_id(self):
@@ -95,14 +89,11 @@ class NavienPowerSwitchEntity(NavienBaseEntity, SwitchEntity):
 class MgppAntiLegionellaSwitchEntity(NavienBaseEntity, SwitchEntity):
     """Define an MGPP Anti-Legionella Switch Entity."""
 
+    _attr_name = "Anti-Legionella"
+
     def __init__(self, device):
         """Initialize the entity."""
         super().__init__(device)
-
-    @property
-    def name(self):
-        """Return the name of the entity."""
-        return f"{self._device.device_name} Anti-Legionella"
 
     @property
     def unique_id(self):
@@ -127,14 +118,11 @@ class MgppAntiLegionellaSwitchEntity(NavienBaseEntity, SwitchEntity):
 class MgppFreezeProtectionSwitchEntity(NavienBaseEntity, SwitchEntity):
     """Define an MGPP Freeze Protection Switch Entity."""
 
+    _attr_name = "Freeze Protection"
+
     def __init__(self, device):
         """Initialize the entity."""
         super().__init__(device)
-
-    @property
-    def name(self):
-        """Return the name of the entity."""
-        return f"{self._device.device_name} Freeze Protection"
 
     @property
     def unique_id(self):

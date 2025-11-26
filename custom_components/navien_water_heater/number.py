@@ -31,6 +31,8 @@ async def async_setup_entry(
 class NavienVacationModeDurationNumberEntity(NavienBaseEntity, NumberEntity):
     """Representation of a Navien vacation mode duration number entity."""
 
+    _attr_name = "Vacation Mode Duration"
+
     def __init__(self, device: MgppDevice):
         """Initialize the vacation mode duration number entity."""
         super().__init__(device)
@@ -49,11 +51,6 @@ class NavienVacationModeDurationNumberEntity(NavienBaseEntity, NumberEntity):
             self._value = 7
             # Initialize device's vacation_days with our default value
             self._device.vacation_days = self._value
-
-    @property
-    def name(self):
-        """Return the name of the entity."""
-        return f"{self._device.device_name} Vacation Mode Duration"
 
     @property
     def unique_id(self):

@@ -26,10 +26,7 @@ class NavienWaterHeaterMgppEntity(NavienBaseEntity, WaterHeaterEntity):
         """Initialize the MGPP water heater entity."""
         super().__init__(device)
 
-    @property
-    def name(self):
-        """Return the name of the entity."""
-        return self._device.device_name
+    _attr_name = None  # Use device name as entity name
 
     @property
     def unique_id(self):
