@@ -33,8 +33,7 @@ class NavilinkAccountCoordinator:
         self.user_info = None
         self.device_info_list = []
         self.gateways = {}  # mac_address -> NavilinkConnect
-        self.hass = None  # Set by __init__.py for device registry access
-        self._disabled_devices = set()  # Set of device identifiers that are disabled
+        self._disabled_devices = set()  # Set of device identifiers that should not be polled
 
     @property
     def devices(self):
@@ -122,39 +121,38 @@ class NavilinkAccountCoordinator:
             await gateway.disconnect()
         self.gateways.clear()
 
-    def is_device_disabled(self, device_identifier):
-        """Check if a device is disabled in Home Assistant's device registry.
+    def is_device_polling_disabled(self, device_identifier):
+        """Check if polling is disabled for a device.
         
         Args:
             device_identifier: The unique identifier for the device (mac_address or mac_address_channel)
         
         Returns:
-            True if the device is disabled, False otherwise
+            True if polling is disabled for this device, False otherwise
         """
-        if self.hass is None:
-            return False
-        
-        try:
-            from homeassistant.helpers import device_registry as dr
-            device_registry = dr.async_get(self.hass)
-            
-            # Look up the device by its identifier
-            from .const import DOMAIN
-            device = device_registry.async_get_device(identifiers={(DOMAIN, device_identifier)})
-            
-            if device and device.disabled_by is not None:
-                return True
-            return False
-        except Exception as e:
-            _LOGGER.debug(f"Error checking device disabled state: {e}")
-            return False
+        return device_identifier in self._disabled_devices
 
-    def update_disabled_devices(self):
-        """Update the set of disabled devices from the device registry."""
-        self._disabled_devices.clear()
-        for device_id, device in self.devices.items():
-            if self.is_device_disabled(device.device_identifier):
-                self._disabled_devices.add(device.device_identifier)
+    def set_device_polling_disabled(self, device_identifier, disabled):
+        """Enable or disable polling for a specific device.
+        
+        Args:
+            device_identifier: The unique identifier for the device
+            disabled: True to disable polling, False to enable polling
+        """
+        if disabled:
+            self._disabled_devices.add(device_identifier)
+            _LOGGER.debug(f"Disabled polling for device: {device_identifier}")
+        else:
+            self._disabled_devices.discard(device_identifier)
+            _LOGGER.debug(f"Enabled polling for device: {device_identifier}")
+
+    def set_disabled_devices(self, device_identifiers):
+        """Set the complete set of devices that should not be polled.
+        
+        Args:
+            device_identifiers: Set or list of device identifiers to disable polling for
+        """
+        self._disabled_devices = set(device_identifiers)
         _LOGGER.debug(f"Updated disabled devices: {self._disabled_devices}")
 
 
@@ -330,13 +328,9 @@ class NavilinkConnect:
 
             pre_poll = datetime.now()
             if not self.client_lock.locked():
-                # Update disabled devices before polling
-                if self.coordinator:
-                    self.coordinator.update_disabled_devices()
-                
                 # Check if all devices are disabled - skip polling entirely
                 all_disabled = all(
-                    self.coordinator and self.coordinator.is_device_disabled(device.device_identifier)
+                    self.coordinator and self.coordinator.is_device_polling_disabled(device.device_identifier)
                     for device in self.devices.values()
                 ) if self.devices else False
                 
@@ -551,7 +545,7 @@ class NavilinkConnect:
             _LOGGER.debug("Using legacy protocol for status requests")
             for device in self.devices.values():
                 # Skip polling for disabled devices
-                if self.coordinator and self.coordinator.is_device_disabled(device.device_identifier):
+                if self.coordinator and self.coordinator.is_device_polling_disabled(device.device_identifier):
                     _LOGGER.debug(f"Skipping disabled device {device.device_identifier}")
                     continue
                     
@@ -571,7 +565,7 @@ class NavilinkConnect:
         
         # Check if MGPP device is disabled
         for device in self.devices.values():
-            if self.coordinator and self.coordinator.is_device_disabled(device.device_identifier):
+            if self.coordinator and self.coordinator.is_device_polling_disabled(device.device_identifier):
                 _LOGGER.debug(f"Skipping disabled MGPP device {device.device_identifier}")
                 return
         
