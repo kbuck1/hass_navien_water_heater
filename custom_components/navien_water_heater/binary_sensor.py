@@ -5,6 +5,7 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .entity import NavienBaseEntity
@@ -28,26 +29,34 @@ async def async_setup_entry(
             # MGPP diagnostic sensors - disabled by default
             sensors.extend([
                 MgppBinarySensor(device, 'heatUpperUse', 'Upper Heating Element',
-                                device_class=BinarySensorDeviceClass.HEAT, enabled_default=False),
+                                device_class=BinarySensorDeviceClass.HEAT, enabled_default=False,
+                                entity_category=EntityCategory.DIAGNOSTIC),
                 MgppBinarySensor(device, 'heatLowerUse', 'Lower Heating Element',
-                                device_class=BinarySensorDeviceClass.HEAT, enabled_default=False),
+                                device_class=BinarySensorDeviceClass.HEAT, enabled_default=False,
+                                entity_category=EntityCategory.DIAGNOSTIC),
                 MgppBinarySensor(device, 'compUse', 'Heat Pump Compressor',
-                                device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False),
+                                device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False,
+                                entity_category=EntityCategory.DIAGNOSTIC),
                 MgppBinarySensor(device, 'evaFanUse', 'Evaporator Fan',
-                                device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False),
+                                device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False,
+                                entity_category=EntityCategory.DIAGNOSTIC),
                 MgppBinarySensor(device, 'eevUse', 'Electronic Expansion Valve',
-                                device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False),
+                                device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False,
+                                entity_category=EntityCategory.DIAGNOSTIC),
                 MgppBinarySensor(device, 'operationBusy', 'System Heating',
-                                device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False),
+                                device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False,
+                                entity_category=EntityCategory.DIAGNOSTIC),
             ])
             
             # Recirculation binary sensors - only if device supports recirculation
             if device.supports_recirculation:
                 sensors.extend([
                     MgppBinarySensor(device, 'recircHotBtnReady', 'Hot Button Ready',
-                                    enabled_default=False),
+                                    enabled_default=False,
+                                    entity_category=EntityCategory.DIAGNOSTIC),
                     MgppBinarySensor(device, 'recircPumpOperationStatus', 'Recirculation Pump',
-                                    device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False),
+                                    device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False,
+                                    entity_category=EntityCategory.DIAGNOSTIC),
                 ])
     
     async_add_entities(sensors)
@@ -56,12 +65,14 @@ async def async_setup_entry(
 class MgppBinarySensor(NavienBaseEntity, BinarySensorEntity):
     """Representation of an MGPP diagnostic binary sensor"""
 
-    def __init__(self, device, sensor_key, name, device_class=None, enabled_default=True):
+    def __init__(self, device, sensor_key, name, device_class=None, enabled_default=True,
+                 entity_category=None):
         super().__init__(device)
         self.sensor_key = sensor_key
         self._attr_name = name
         self._device_class = device_class
         self._enabled_default = enabled_default
+        self._attr_entity_category = entity_category
         self._cached_unique_id = None
 
     def _get_legacy_unique_id(self) -> str:

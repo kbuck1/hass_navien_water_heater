@@ -2,6 +2,7 @@
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .entity import NavienBaseEntity
@@ -136,6 +137,7 @@ class MgppAntiLegionellaSwitchEntity(NavienBaseEntity, SwitchEntity):
 
     _attr_name = "Anti-Legionella"
     _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, device):
         """Initialize the entity."""
@@ -186,6 +188,7 @@ class MgppFreezeProtectionSwitchEntity(NavienBaseEntity, SwitchEntity):
 
     _attr_name = "Freeze Protection"
     _attr_entity_registry_enabled_default = False
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, device):
         """Initialize the entity."""

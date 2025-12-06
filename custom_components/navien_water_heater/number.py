@@ -4,6 +4,7 @@ import logging
 from homeassistant.components.number import NumberEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .entity import NavienBaseEntity
@@ -32,6 +33,7 @@ class NavienVacationModeDurationNumberEntity(NavienBaseEntity, NumberEntity):
     """Representation of a Navien vacation mode duration number entity."""
 
     _attr_name = "Vacation Mode Duration"
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, device: MgppDevice):
         """Initialize the vacation mode duration number entity."""

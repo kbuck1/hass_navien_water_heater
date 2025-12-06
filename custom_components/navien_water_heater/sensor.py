@@ -4,6 +4,7 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
+from homeassistant.helpers.entity import EntityCategory
 from .navien_api import TemperatureType, MgppDevice
 from .mgpp_utils import to_celsius_debug
 from .entity import NavienBaseEntity
@@ -116,65 +117,86 @@ async def async_setup_entry(
             sensors.extend([
                 MgppSensor(device, 'tankUpperTemperature', 'Tank Upper Temperature',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'tankLowerTemperature', 'Tank Lower Temperature',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'dischargeTemperature', 'Discharge Temperature',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'suctionTemperature', 'Suction Temperature',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'evaporatorTemperature', 'Evaporator Temperature',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'ambientTemperature', 'Ambient Temperature',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'wifiRssi', 'WiFi Signal Strength',
                           device_class=SensorDeviceClass.SIGNAL_STRENGTH, unit='dBm',
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'currentInstPower', 'Current Instantaneous Power',
-                          unit=UnitOfPower.WATT, state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          unit=UnitOfPower.WATT, state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 # Fan sensors
                 MgppSensor(device, 'targetFanRpm', 'Target Fan RPM',
-                          unit='RPM', state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          unit='RPM', state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'currentFanRpm', 'Current Fan RPM',
-                          unit='RPM', state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          unit='RPM', state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 # Error sensors
                 MgppSensor(device, 'errorCode', 'Error Code',
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'subErrorCode', 'Sub Error Code',
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 # Energy capacity sensors
                 MgppSensor(device, 'totalEnergyCapacity', 'Total Energy Capacity',
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'availableEnergyCapacity', 'Available Energy Capacity',
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 # Heat pump diagnostic sensors
                 MgppSensor(device, 'eevStep', 'EEV Step',
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'currentSuperHeat', 'Current Superheat',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'targetSuperHeat', 'Target Superheat',
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'currentStatenum', 'Current State Number',
-                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'cumulatedOpTimeEvaFan', 'Evaporator Fan Operating Hours',
                           device_class=SensorDeviceClass.DURATION, unit=UnitOfTime.HOURS,
-                          state_class=SensorStateClass.TOTAL_INCREASING, enabled_default=False),
+                          state_class=SensorStateClass.TOTAL_INCREASING, enabled_default=False,
+                          entity_category=EntityCategory.DIAGNOSTIC),
             ])
             
             # Recirculation sensors - only if device supports recirculation
             if device.supports_recirculation:
                 sensors.extend([
                     MgppSensor(device, 'recircDhwFlowRate', 'Recirculation Flow Rate',
-                              state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                              state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                              entity_category=EntityCategory.DIAGNOSTIC),
                     MgppSensor(device, 'recircFaucetTemperature', 'Recirculation Faucet Temperature',
                               device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
-                              state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                              state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
+                              entity_category=EntityCategory.DIAGNOSTIC),
                 ])
         else:
             # Legacy sensors
@@ -325,7 +347,8 @@ class MgppSensor(NavienBaseEntity, SensorEntity):
     """Representation of an MGPP-specific sensor"""
 
     def __init__(self, device, sensor_key, name, device_class=None,
-                 unit=None, state_class=None, enabled_default=True):
+                 unit=None, state_class=None, enabled_default=True,
+                 entity_category=None):
         super().__init__(device)
         self.sensor_key = sensor_key
         self._attr_name = name
@@ -333,6 +356,7 @@ class MgppSensor(NavienBaseEntity, SensorEntity):
         self._unit = unit
         self._state_class = state_class
         self._enabled_default = enabled_default
+        self._attr_entity_category = entity_category
         self._cached_unique_id = None
 
     def _get_legacy_unique_id(self) -> str:
