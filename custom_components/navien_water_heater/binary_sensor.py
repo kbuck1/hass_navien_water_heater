@@ -8,6 +8,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .entity import NavienBaseEntity
+from .migration import get_legacy_unique_id_if_exists
 from .navien_api import MgppDevice
 from .const import DOMAIN
 import logging
@@ -52,11 +53,31 @@ class MgppBinarySensor(NavienBaseEntity, BinarySensorEntity):
         self._attr_name = name
         self._device_class = device_class
         self._enabled_default = enabled_default
+        self._cached_unique_id = None
+
+    def _get_legacy_unique_id(self) -> str:
+        """Return legacy unique_id format: {mac}{key}"""
+        return f"{self._device.mac_address}{self.sensor_key}"
+
+    def _get_new_unique_id(self) -> str:
+        """Return new unique_id format: {mac}_{key}"""
+        return f"{self._device.device_identifier}_{self.sensor_key}"
 
     @property
     def unique_id(self):
-        """Return the unique ID of the entity."""
-        return f"{self._device.device_identifier}_{self.sensor_key}"
+        """Return the unique ID of the entity, using legacy format if it exists."""
+        if self._cached_unique_id is not None:
+            return self._cached_unique_id
+        
+        if self.hass is None:
+            return self._get_new_unique_id()
+        
+        self._cached_unique_id = get_legacy_unique_id_if_exists(
+            self.hass, "binary_sensor",
+            self._get_legacy_unique_id(),
+            self._get_new_unique_id(),
+        )
+        return self._cached_unique_id
 
     @property
     def device_class(self) -> BinarySensorDeviceClass:

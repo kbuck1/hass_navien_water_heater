@@ -5,6 +5,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .entity import NavienBaseEntity
+from .migration import get_legacy_unique_id_if_exists
 from .navien_api import MgppDevice
 from .const import DOMAIN
 
@@ -38,11 +39,31 @@ class NavienOnDemandSwitchEntity(NavienBaseEntity, SwitchEntity):
     def __init__(self, device):
         """Initialize the entity."""
         super().__init__(device)
+        self._cached_unique_id = None
+
+    def _get_legacy_unique_id(self) -> str:
+        """Return legacy unique_id format: {mac}{channel}hot_button"""
+        return f"{self._device.mac_address}{self._device.channel_number}hot_button"
+
+    def _get_new_unique_id(self) -> str:
+        """Return new unique_id format: {mac}_{channel}_hot_button"""
+        return f"{self._device.device_identifier}_hot_button"
 
     @property
     def unique_id(self):
-        """Return the unique ID of the entity."""
-        return f"{self._device.device_identifier}_hot_button"
+        """Return the unique ID of the entity, using legacy format if it exists."""
+        if self._cached_unique_id is not None:
+            return self._cached_unique_id
+        
+        if self.hass is None:
+            return self._get_new_unique_id()
+        
+        self._cached_unique_id = get_legacy_unique_id_if_exists(
+            self.hass, "switch",
+            self._get_legacy_unique_id(),
+            self._get_new_unique_id(),
+        )
+        return self._cached_unique_id
 
     @property
     def is_on(self):
@@ -66,11 +87,31 @@ class NavienPowerSwitchEntity(NavienBaseEntity, SwitchEntity):
     def __init__(self, device):
         """Initialize the entity."""
         super().__init__(device)
+        self._cached_unique_id = None
+
+    def _get_legacy_unique_id(self) -> str:
+        """Return legacy unique_id format: {mac}{channel}power_button"""
+        return f"{self._device.mac_address}{self._device.channel_number}power_button"
+
+    def _get_new_unique_id(self) -> str:
+        """Return new unique_id format: {mac}_{channel}_power"""
+        return f"{self._device.device_identifier}_power"
 
     @property
     def unique_id(self):
-        """Return the unique ID of the entity."""
-        return f"{self._device.device_identifier}_power"
+        """Return the unique ID of the entity, using legacy format if it exists."""
+        if self._cached_unique_id is not None:
+            return self._cached_unique_id
+        
+        if self.hass is None:
+            return self._get_new_unique_id()
+        
+        self._cached_unique_id = get_legacy_unique_id_if_exists(
+            self.hass, "switch",
+            self._get_legacy_unique_id(),
+            self._get_new_unique_id(),
+        )
+        return self._cached_unique_id
 
     @property
     def is_on(self):
@@ -94,11 +135,31 @@ class MgppAntiLegionellaSwitchEntity(NavienBaseEntity, SwitchEntity):
     def __init__(self, device):
         """Initialize the entity."""
         super().__init__(device)
+        self._cached_unique_id = None
+
+    def _get_legacy_unique_id(self) -> str:
+        """Return legacy unique_id format: {mac}anti_legionella"""
+        return f"{self._device.mac_address}anti_legionella"
+
+    def _get_new_unique_id(self) -> str:
+        """Return new unique_id format: {mac}_anti_legionella"""
+        return f"{self._device.device_identifier}_anti_legionella"
 
     @property
     def unique_id(self):
-        """Return the unique ID of the entity."""
-        return f"{self._device.device_identifier}_anti_legionella"
+        """Return the unique ID of the entity, using legacy format if it exists."""
+        if self._cached_unique_id is not None:
+            return self._cached_unique_id
+        
+        if self.hass is None:
+            return self._get_new_unique_id()
+        
+        self._cached_unique_id = get_legacy_unique_id_if_exists(
+            self.hass, "switch",
+            self._get_legacy_unique_id(),
+            self._get_new_unique_id(),
+        )
+        return self._cached_unique_id
 
     @property
     def is_on(self):
@@ -123,11 +184,31 @@ class MgppFreezeProtectionSwitchEntity(NavienBaseEntity, SwitchEntity):
     def __init__(self, device):
         """Initialize the entity."""
         super().__init__(device)
+        self._cached_unique_id = None
+
+    def _get_legacy_unique_id(self) -> str:
+        """Return legacy unique_id format: {mac}freeze_protection"""
+        return f"{self._device.mac_address}freeze_protection"
+
+    def _get_new_unique_id(self) -> str:
+        """Return new unique_id format: {mac}_freeze_protection"""
+        return f"{self._device.device_identifier}_freeze_protection"
 
     @property
     def unique_id(self):
-        """Return the unique ID of the entity."""
-        return f"{self._device.device_identifier}_freeze_protection"
+        """Return the unique ID of the entity, using legacy format if it exists."""
+        if self._cached_unique_id is not None:
+            return self._cached_unique_id
+        
+        if self.hass is None:
+            return self._get_new_unique_id()
+        
+        self._cached_unique_id = get_legacy_unique_id_if_exists(
+            self.hass, "switch",
+            self._get_legacy_unique_id(),
+            self._get_new_unique_id(),
+        )
+        return self._cached_unique_id
 
     @property
     def is_on(self):

@@ -7,6 +7,7 @@ from homeassistant.components.sensor import (
 from .navien_api import TemperatureType, MgppDevice
 from .mgpp_utils import to_celsius_debug
 from .entity import NavienBaseEntity
+from .migration import get_legacy_unique_id_if_exists
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     PERCENTAGE,
@@ -156,11 +157,31 @@ class NavienAvgCalorieSensor(NavienBaseEntity, SensorEntity):
     def __init__(self, device):
         """Initialize the sensor."""
         super().__init__(device)
+        self._cached_unique_id = None
+
+    def _get_legacy_unique_id(self) -> str:
+        """Return legacy unique_id format: {mac}{channel}avgCalorie"""
+        return f"{self._device.mac_address}{self._device.channel_number}avgCalorie"
+
+    def _get_new_unique_id(self) -> str:
+        """Return new unique_id format: {mac}_{channel}_avg_calorie"""
+        return f"{self._device.device_identifier}_avg_calorie"
 
     @property
     def unique_id(self):
-        """Return the unique ID of the entity."""
-        return f"{self._device.device_identifier}_avg_calorie"
+        """Return the unique ID of the entity, using legacy format if it exists."""
+        if self._cached_unique_id is not None:
+            return self._cached_unique_id
+        
+        if self.hass is None:
+            return self._get_new_unique_id()
+        
+        self._cached_unique_id = get_legacy_unique_id_if_exists(
+            self.hass, "sensor",
+            self._get_legacy_unique_id(),
+            self._get_new_unique_id(),
+        )
+        return self._cached_unique_id
 
     @property
     def device_class(self) -> SensorDeviceClass:
@@ -194,6 +215,7 @@ class NavienSensor(NavienBaseEntity, SensorEntity):
         self.sensor_description = sensor_description
         self.unit_number = unit_info.get("unitNumber", "")
         self.hass = hass
+        self._cached_unique_id = None
         # Set name based on unit number
         if self.unit_number:
             self._attr_name = f"Unit {self.unit_number} {sensor_description.name}"
@@ -215,10 +237,29 @@ class NavienSensor(NavienBaseEntity, SensorEntity):
             self._attr_name = self.sensor_description.name
         self.async_write_ha_state()
 
+    def _get_legacy_unique_id(self) -> str:
+        """Return legacy unique_id format: {mac}{channel}{unit}{type}"""
+        return f"{self._device.mac_address}{self._device.channel_number}{self.unit_info.get('unitNumber', '')}{self.sensor_type}"
+
+    def _get_new_unique_id(self) -> str:
+        """Return new unique_id format: {mac}_{channel}_{unit}_{type}"""
+        return f"{self._device.device_identifier}_{self.unit_info.get('unitNumber', '')}_{self.sensor_type}"
+
     @property
     def unique_id(self):
-        """Return the unique ID of the entity."""
-        return f"{self._device.device_identifier}_{self.unit_info.get('unitNumber', '')}_{self.sensor_type}"
+        """Return the unique ID of the entity, using legacy format if it exists."""
+        if self._cached_unique_id is not None:
+            return self._cached_unique_id
+        
+        if self.hass is None:
+            return self._get_new_unique_id()
+        
+        self._cached_unique_id = get_legacy_unique_id_if_exists(
+            self.hass, "sensor",
+            self._get_legacy_unique_id(),
+            self._get_new_unique_id(),
+        )
+        return self._cached_unique_id
 
     @property
     def device_class(self) -> SensorDeviceClass:
@@ -253,11 +294,31 @@ class MgppSensor(NavienBaseEntity, SensorEntity):
         self._unit = unit
         self._state_class = state_class
         self._enabled_default = enabled_default
+        self._cached_unique_id = None
+
+    def _get_legacy_unique_id(self) -> str:
+        """Return legacy unique_id format: {mac}{key}"""
+        return f"{self._device.mac_address}{self.sensor_key}"
+
+    def _get_new_unique_id(self) -> str:
+        """Return new unique_id format: {mac}_{key}"""
+        return f"{self._device.device_identifier}_{self.sensor_key}"
 
     @property
     def unique_id(self):
-        """Return the unique ID of the entity."""
-        return f"{self._device.device_identifier}_{self.sensor_key}"
+        """Return the unique ID of the entity, using legacy format if it exists."""
+        if self._cached_unique_id is not None:
+            return self._cached_unique_id
+        
+        if self.hass is None:
+            return self._get_new_unique_id()
+        
+        self._cached_unique_id = get_legacy_unique_id_if_exists(
+            self.hass, "sensor",
+            self._get_legacy_unique_id(),
+            self._get_new_unique_id(),
+        )
+        return self._cached_unique_id
 
     @property
     def device_class(self) -> SensorDeviceClass:

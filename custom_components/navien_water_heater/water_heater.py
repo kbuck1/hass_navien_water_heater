@@ -14,6 +14,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .entity import NavienBaseEntity
+from .migration import get_legacy_unique_id_if_exists
 from .navien_api import MgppDevice
 from .water_heater_mgpp import NavienWaterHeaterMgppEntity
 from .const import DOMAIN
@@ -49,13 +50,33 @@ class NavienWaterHeaterEntity(NavienBaseEntity, WaterHeaterEntity):
     def __init__(self, device):
         """Initialize the water heater entity."""
         super().__init__(device)
+        self._cached_unique_id = None
 
     _attr_name = None  # Use device name as entity name
 
+    def _get_legacy_unique_id(self) -> str:
+        """Return legacy unique_id format: {mac}{channel}"""
+        return f"{self._device.mac_address}{self._device.channel_number}"
+
+    def _get_new_unique_id(self) -> str:
+        """Return new unique_id format: {mac}_{channel}_water_heater"""
+        return f"{self._device.device_identifier}_water_heater"
+
     @property
     def unique_id(self):
-        """Return the unique ID of the entity."""
-        return f"{self._device.device_identifier}_water_heater"
+        """Return the unique ID of the entity, using legacy format if it exists."""
+        if self._cached_unique_id is not None:
+            return self._cached_unique_id
+        
+        if self.hass is None:
+            return self._get_new_unique_id()
+        
+        self._cached_unique_id = get_legacy_unique_id_if_exists(
+            self.hass, "water_heater",
+            self._get_legacy_unique_id(),
+            self._get_new_unique_id(),
+        )
+        return self._cached_unique_id
 
     @property
     def temperature_unit(self):
