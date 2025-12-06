@@ -176,6 +176,7 @@ async def async_setup_entry(
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'targetSuperHeat', 'Target Superheat',
+                          device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
                 MgppSensor(device, 'currentStatenum', 'Current State Number',
