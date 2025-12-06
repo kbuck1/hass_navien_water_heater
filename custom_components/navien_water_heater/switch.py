@@ -22,6 +22,10 @@ async def async_setup_entry(
             # MGPP-specific switches
             entities.append(MgppAntiLegionellaSwitchEntity(device))
             entities.append(MgppFreezeProtectionSwitchEntity(device))
+            
+            # Hot Button - only if device supports recirculation
+            if device.supports_recirculation:
+                entities.append(MgppHotButtonSwitchEntity(device))
         else:
             # Legacy switches
             if device.channel_info.get("onDemandUse", 2) == 1:
@@ -131,6 +135,7 @@ class MgppAntiLegionellaSwitchEntity(NavienBaseEntity, SwitchEntity):
     """Define an MGPP Anti-Legionella Switch Entity."""
 
     _attr_name = "Anti-Legionella"
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, device):
         """Initialize the entity."""
@@ -180,6 +185,7 @@ class MgppFreezeProtectionSwitchEntity(NavienBaseEntity, SwitchEntity):
     """Define an MGPP Freeze Protection Switch Entity."""
 
     _attr_name = "Freeze Protection"
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, device):
         """Initialize the entity."""
@@ -223,3 +229,52 @@ class MgppFreezeProtectionSwitchEntity(NavienBaseEntity, SwitchEntity):
     async def async_turn_off(self):
         """Turn Off Freeze Protection."""
         await self._device.set_freeze_protection_state(False)
+
+
+class MgppHotButtonSwitchEntity(NavienBaseEntity, SwitchEntity):
+    """Define an MGPP Hot Button/Recirculation Switch Entity."""
+
+    _attr_name = "Hot Button"
+
+    def __init__(self, device):
+        """Initialize the entity."""
+        super().__init__(device)
+        self._cached_unique_id = None
+
+    def _get_legacy_unique_id(self) -> str:
+        """Return legacy unique_id format: {mac}hot_button"""
+        return f"{self._device.mac_address}hot_button"
+
+    def _get_new_unique_id(self) -> str:
+        """Return new unique_id format: {mac}_hot_button"""
+        return f"{self._device.device_identifier}_hot_button"
+
+    @property
+    def unique_id(self):
+        """Return the unique ID of the entity, using legacy format if it exists."""
+        if self._cached_unique_id is not None:
+            return self._cached_unique_id
+        
+        if self.hass is None:
+            return self._get_new_unique_id()
+        
+        self._cached_unique_id = get_legacy_unique_id_if_exists(
+            self.hass, "switch",
+            self._get_legacy_unique_id(),
+            self._get_new_unique_id(),
+        )
+        return self._cached_unique_id
+
+    @property
+    def is_on(self):
+        """Return the current Hot Button state."""
+        # recircHotBtnReady: 2=ready/on, 1=not ready/off
+        return self._device.channel_status.get("recircHotBtnReady", 0) == 2
+
+    async def async_turn_on(self):
+        """Turn On Hot Button (trigger recirculation)."""
+        await self._device.set_recirc_hot_button_state(True)
+
+    async def async_turn_off(self):
+        """Turn Off Hot Button."""
+        await self._device.set_recirc_hot_button_state(False)

@@ -40,6 +40,15 @@ async def async_setup_entry(
                 MgppBinarySensor(device, 'operationBusy', 'System Heating',
                                 device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False),
             ])
+            
+            # Recirculation binary sensors - only if device supports recirculation
+            if device.supports_recirculation:
+                sensors.extend([
+                    MgppBinarySensor(device, 'recircHotBtnReady', 'Hot Button Ready',
+                                    enabled_default=False),
+                    MgppBinarySensor(device, 'recircPumpOperationStatus', 'Recirculation Pump',
+                                    device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False),
+                ])
     
     async_add_entities(sensors)
 

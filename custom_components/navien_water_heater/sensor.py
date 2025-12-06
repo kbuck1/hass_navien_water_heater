@@ -13,6 +13,7 @@ from homeassistant.const import (
     PERCENTAGE,
     UnitOfPower,
     UnitOfTemperature,
+    UnitOfTime,
     UnitOfVolume,
 )
 
@@ -136,7 +137,45 @@ async def async_setup_entry(
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
                 MgppSensor(device, 'currentInstPower', 'Current Instantaneous Power',
                           unit=UnitOfPower.WATT, state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                # Fan sensors
+                MgppSensor(device, 'targetFanRpm', 'Target Fan RPM',
+                          unit='RPM', state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(device, 'currentFanRpm', 'Current Fan RPM',
+                          unit='RPM', state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                # Error sensors
+                MgppSensor(device, 'errorCode', 'Error Code',
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(device, 'subErrorCode', 'Sub Error Code',
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                # Energy capacity sensors
+                MgppSensor(device, 'totalEnergyCapacity', 'Total Energy Capacity',
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(device, 'availableEnergyCapacity', 'Available Energy Capacity',
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                # Heat pump diagnostic sensors
+                MgppSensor(device, 'eevStep', 'EEV Step',
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(device, 'currentSuperHeat', 'Current Superheat',
+                          device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(device, 'targetSuperHeat', 'Target Superheat',
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(device, 'currentStatenum', 'Current State Number',
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                MgppSensor(device, 'cumulatedOpTimeEvaFan', 'Evaporator Fan Operating Hours',
+                          device_class=SensorDeviceClass.DURATION, unit=UnitOfTime.HOURS,
+                          state_class=SensorStateClass.TOTAL_INCREASING, enabled_default=False),
             ])
+            
+            # Recirculation sensors - only if device supports recirculation
+            if device.supports_recirculation:
+                sensors.extend([
+                    MgppSensor(device, 'recircDhwFlowRate', 'Recirculation Flow Rate',
+                              state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                    MgppSensor(device, 'recircFaucetTemperature', 'Recirculation Faucet Temperature',
+                              device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
+                              state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
+                ])
         else:
             # Legacy sensors
             navien_units = "us_customary" if device.channel_info.get("temperatureType", 2) == TemperatureType.FAHRENHEIT.value else "metric"

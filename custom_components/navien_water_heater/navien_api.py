@@ -711,6 +711,19 @@ class NavilinkConnect:
         await self.async_publish(topic=topic, payload=payload, session_id=session_id)
         await self._get_mgpp_status_all(wait_for_response=True)
 
+    async def _mgpp_recirc_hot_button_command(self, state, channel_number):
+        """MGPP recirculation hot button control command"""
+        if not self._uses_mgpp_protocol():
+            raise ValueError("MGPP recirculation hot button only supported for MGPP protocol devices")
+
+        topic = self.topics.mgpp_control()
+        payload = self.messages.mgpp_recirc_hot_button(state, channel_number)
+        session_id = self.get_session_id()
+        payload["sessionID"] = session_id
+        self.response_events[session_id] = asyncio.Event()
+        await self.async_publish(topic=topic, payload=payload, session_id=session_id)
+        await self._get_mgpp_status_all(wait_for_response=True)
+
     def get_session_id(self):
         return str(int(round((datetime.utcnow() - datetime(1970, 1, 1)).total_seconds() * 1000)))
 
@@ -1140,6 +1153,22 @@ class MgppDevice:
             finally:
                 self.waiting_for_response = False
 
+    @property
+    def supports_recirculation(self):
+        """Check if device supports recirculation (Hot Button)."""
+        # RecirculationUse: 1=NOT_USE, 2=USE
+        return self.did_features.get('recirculationUse', 0) == 2
+
+    async def set_recirc_hot_button_state(self, state):
+        """Set MGPP recirculation hot button state"""
+        if not self.waiting_for_response:
+            self.waiting_for_response = True
+            try:
+                await self.gateway._mgpp_recirc_hot_button_command(state, self.channel_number)
+                self.publish_update()
+            finally:
+                self.waiting_for_response = False
+
     def get_error_message(self):
         """Get human-readable error message if device has errors"""
         if not self.channel_status.get('hasError', False):
@@ -1500,6 +1529,27 @@ class MgppMessages:
                 "macAddress": self.mac_address,
                 "mode": "freeze-protection",
                 "param": [],
+                "paramStr": ""
+            },
+            "requestTopic": self.topics.mgpp_control(),
+            "responseTopic": self.topics.mgpp_res(),
+            "sessionID": ""
+        }
+
+    def mgpp_recirc_hot_button(self, state, channel_number):
+        """MGPP recirculation hot button control message - uses RequestMgppControl structure per spec"""
+        # Command ID 33554444, mode "recirc-hotbtn", param [state] where state is 2=ON, 1=OFF
+        state_value = 2 if state else 1
+        return {
+            "clientID": self.client_id,
+            "protocolVersion": 2,
+            "request": {
+                "additionalValue": self.additional_value,
+                "command": 33554444,
+                "deviceType": self.device_type,
+                "macAddress": self.mac_address,
+                "mode": "recirc-hotbtn",
+                "param": [state_value],
                 "paramStr": ""
             },
             "requestTopic": self.topics.mgpp_control(),
