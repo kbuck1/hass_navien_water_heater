@@ -15,7 +15,6 @@ from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from .entity import NavienBaseEntity
 from .migration import get_legacy_unique_id_if_exists
 from .navien_api import MgppDevice
-from .mgpp_utils import to_celsius_display
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -92,25 +91,28 @@ class NavienWaterHeaterMgppEntity(NavienBaseEntity, WaterHeaterEntity):
 
     @property
     def current_temperature(self):
-        raw = self._device.channel_status.get("dhwTemperature", 0)
-        return to_celsius_display(raw)
+        """Current DHW temperature in Celsius."""
+        return self._device.dhw_temperature
 
     @property
     def target_temperature(self):
-        raw = self._device.channel_status.get("dhwTemperatureSetting", 0)
-        return to_celsius_display(raw)
+        """Target DHW temperature in Celsius."""
+        return self._device.dhw_temperature_setting
 
     @property
     def target_temperature_step(self):
+        """MGPP uses half-degree Celsius increments."""
         return 0.5
 
     @property
     def min_temp(self):
-        return to_celsius_display(self._device.did_features.get("dhwTemperatureMin", 0))
+        """Minimum temperature in Celsius."""
+        return self._device.dhw_temperature_min
 
     @property
     def max_temp(self):
-        return to_celsius_display(self._device.did_features.get("dhwTemperatureMax", 0))
+        """Maximum temperature in Celsius."""
+        return self._device.dhw_temperature_max
 
     async def async_set_temperature(self, **kwargs):
         target_c = kwargs.get(ATTR_TEMPERATURE)

@@ -6,7 +6,6 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.helpers.entity import EntityCategory
 from .navien_api import TemperatureType, MgppDevice
-from .mgpp_utils import to_celsius_debug
 from .entity import NavienBaseEntity
 from .migration import get_legacy_unique_id_if_exists
 from homeassistant.config_entries import ConfigEntry
@@ -45,24 +44,35 @@ class GenericSensorDescription():
 
 
 class TempSensorDescription():
-    """Class to convert temperature values"""
-    def __init__(self, state_class, native_unit_of_measurement, name, convert_to, device_class=None) -> None:
+    """Class for temperature sensor values.
+    
+    Values from the API are already in the device's native unit (Celsius or Fahrenheit).
+    We declare the native unit to HA, which handles display conversion.
+    """
+    def __init__(self, state_class, native_unit_of_measurement, name, device_class=None) -> None:
         self.state_class = state_class
         self.native_unit_of_measurement = native_unit_of_measurement
         self.name = name
-        self.convert_to = convert_to
         self.device_class = device_class
+        # No longer need conversion_factor since values are in native unit
+        self.conversion_factor = 1
 
     def convert(self, temp):
-        if self.convert_to == UnitOfTemperature.CELSIUS:
-            return round((temp - 32) * 5 / 9, 1)
-        elif self.convert_to == UnitOfTemperature.FAHRENHEIT:
-            return round((temp * 9 / 5) + 32)
-        else:
-            return temp
+        # Values are already in native unit, no conversion needed
+        return temp
 
 
 def get_description(hass_units, navien_units, sensor_type):
+    """Get sensor description based on units.
+    
+    For temperature sensors, values are in the device's native unit (navien_units).
+    We declare that unit to HA, which handles display conversion.
+    
+    For gas/flow sensors, we still convert between metric/imperial as needed.
+    """
+    # Temperature sensors use the device's native unit
+    temp_unit = UnitOfTemperature.CELSIUS if navien_units == "metric" else UnitOfTemperature.FAHRENHEIT
+    
     return {
         "gasInstantUsage": GenericSensorDescription(
             state_class=SensorStateClass.MEASUREMENT,
@@ -85,15 +95,15 @@ def get_description(hass_units, navien_units, sensor_type):
         ),
         "currentInletTemp": TempSensorDescription(
             state_class=SensorStateClass.MEASUREMENT,
-            native_unit_of_measurement=UnitOfTemperature.CELSIUS if hass_units == "metric" else UnitOfTemperature.FAHRENHEIT,
+            native_unit_of_measurement=temp_unit,
             name="Inlet Temp",
-            convert_to="None" if hass_units == navien_units else UnitOfTemperature.FAHRENHEIT if hass_units == "us_customary" else UnitOfTemperature.CELSIUS
+            device_class=SensorDeviceClass.TEMPERATURE
         ),
         "currentOutletTemp": TempSensorDescription(
             state_class=SensorStateClass.MEASUREMENT,
-            native_unit_of_measurement=UnitOfTemperature.CELSIUS if hass_units == "metric" else UnitOfTemperature.FAHRENHEIT,
+            native_unit_of_measurement=temp_unit,
             name="Hot Water Temp",
-            convert_to="None" if hass_units == navien_units else UnitOfTemperature.FAHRENHEIT if hass_units == "us_customary" else UnitOfTemperature.CELSIUS
+            device_class=SensorDeviceClass.TEMPERATURE
         )
     }.get(sensor_type, {})
 
@@ -347,6 +357,19 @@ class NavienSensor(NavienBaseEntity, SensorEntity):
 class MgppSensor(NavienBaseEntity, SensorEntity):
     """Representation of an MGPP-specific sensor"""
 
+    # Mapping from sensor_key to MgppDevice property name for temperature sensors
+    TEMP_PROPERTY_MAP = {
+        'tankUpperTemperature': 'tank_upper_temperature',
+        'tankLowerTemperature': 'tank_lower_temperature',
+        'ambientTemperature': 'ambient_temperature',
+        'dischargeTemperature': 'discharge_temperature',
+        'suctionTemperature': 'suction_temperature',
+        'evaporatorTemperature': 'evaporator_temperature',
+        'currentSuperHeat': 'current_superheat',
+        'targetSuperHeat': 'target_superheat',
+        'recircFaucetTemperature': 'recirc_faucet_temperature',
+    }
+
     def __init__(self, device, sensor_key, name, device_class=None,
                  unit=None, state_class=None, enabled_default=True,
                  entity_category=None):
@@ -402,14 +425,13 @@ class MgppSensor(NavienBaseEntity, SensorEntity):
     @property
     def native_value(self) -> StateType:
         """Return the value reported by the sensor."""
-        raw_value = self._device.channel_status.get(self.sensor_key, 0)
-
-        # Apply temperature conversion for diagnostic temperature sensors
-        if self._device_class == SensorDeviceClass.TEMPERATURE:
-            return to_celsius_debug(raw_value)
+        # For temperature sensors, use MgppDevice properties which handle decoding
+        if self.sensor_key in self.TEMP_PROPERTY_MAP:
+            prop_name = self.TEMP_PROPERTY_MAP[self.sensor_key]
+            return getattr(self._device, prop_name, 0.0)
 
         # Return raw value for non-temperature sensors
-        return raw_value
+        return self._device.channel_status.get(self.sensor_key, 0)
 
     @property
     def entity_registry_enabled_default(self):

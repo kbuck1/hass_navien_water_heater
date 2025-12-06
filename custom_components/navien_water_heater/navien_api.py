@@ -10,6 +10,39 @@ import aiohttp
 _LOGGER = logging.getLogger(__name__)
 
 
+# Temperature conversion helpers
+def _decode_half_degree_celsius(raw: int | float) -> float:
+    """Decode half-degree Celsius encoding to actual Celsius.
+    
+    Used by MGPP display temps and Legacy Celsius devices.
+    Wire encoding: raw = °C × 2
+    """
+    try:
+        return float(raw) / 2.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _decode_tenth_degree_celsius(raw: int | float) -> float:
+    """Decode tenth-degree Celsius encoding to actual Celsius.
+    
+    Used by MGPP diagnostic/sensor temperatures.
+    Wire encoding: raw = °C × 10
+    """
+    try:
+        return float(raw) / 10.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _encode_half_degree_celsius(celsius: float) -> int:
+    """Encode Celsius to half-degree wire format.
+    
+    Used for outbound temperature commands to MGPP and Legacy Celsius devices.
+    """
+    return int(round(celsius * 2))
+
+
 class NavilinkAccountCoordinator:
     """Coordinator that manages all gateways for a Navien account."""
 
@@ -910,6 +943,15 @@ class NavilinkDevice:
         """Backwards compatibility alias for gateway."""
         return self.gateway
 
+    @property
+    def is_celsius(self) -> bool:
+        """Return True if device uses Celsius, False if Fahrenheit.
+        
+        Legacy devices can be configured for Celsius or Fahrenheit.
+        Wire encoding differs: Celsius uses half-degree encoding, Fahrenheit is raw.
+        """
+        return self.channel_info.get("temperatureType", 2) != TemperatureType.FAHRENHEIT.value
+
     def register_callback(self, callback):
         self.callbacks.append(callback)
 
@@ -946,10 +988,24 @@ class NavilinkDevice:
                 self.waiting_for_response = False
 
     async def set_temperature(self, temp):
+        """Set target temperature.
+        
+        Args:
+            temp: Temperature in the device's native unit (Celsius or Fahrenheit).
+                  For Celsius devices, this will be encoded as half-degree format.
+                  For Fahrenheit devices, this is sent as-is.
+        """
         if not self.waiting_for_response:
             self.waiting_for_response = True
             try:
-                await self.gateway._temperature_command(temp, self.channel_number)
+                # Encode temperature for wire protocol
+                if self.is_celsius:
+                    # Celsius devices use half-degree encoding: raw = °C × 2
+                    wire_temp = _encode_half_degree_celsius(temp)
+                else:
+                    # Fahrenheit devices send raw °F value
+                    wire_temp = int(round(temp))
+                await self.gateway._temperature_command(wire_temp, self.channel_number)
                 self.publish_update()
             finally:
                 self.waiting_for_response = False
@@ -1071,6 +1127,82 @@ class MgppDevice:
         """Backwards compatibility alias for gateway."""
         return self.gateway
 
+    @property
+    def is_celsius(self) -> bool:
+        """Return True - MGPP devices always use Celsius.
+        
+        MGPP devices always use half-degree Celsius wire encoding.
+        The temperatureType field is just a UI display preference.
+        """
+        return True
+
+    # Temperature properties - decode raw values to Celsius
+    @property
+    def dhw_temperature(self) -> float:
+        """Current DHW temperature in Celsius."""
+        return _decode_half_degree_celsius(self.channel_status.get('dhwTemperature', 0))
+
+    @property
+    def dhw_temperature_setting(self) -> float:
+        """Target DHW temperature setting in Celsius."""
+        return _decode_half_degree_celsius(self.channel_status.get('dhwTemperatureSetting', 0))
+
+    @property
+    def dhw_temperature_min(self) -> float:
+        """Minimum DHW temperature in Celsius."""
+        return _decode_half_degree_celsius(self.did_features.get('dhwTemperatureMin', 0))
+
+    @property
+    def dhw_temperature_max(self) -> float:
+        """Maximum DHW temperature in Celsius."""
+        return _decode_half_degree_celsius(self.did_features.get('dhwTemperatureMax', 0))
+
+    # Diagnostic temperature properties - tenth-degree encoding
+    @property
+    def tank_upper_temperature(self) -> float:
+        """Tank upper temperature in Celsius."""
+        return _decode_tenth_degree_celsius(self.channel_status.get('tankUpperTemperature', 0))
+
+    @property
+    def tank_lower_temperature(self) -> float:
+        """Tank lower temperature in Celsius."""
+        return _decode_tenth_degree_celsius(self.channel_status.get('tankLowerTemperature', 0))
+
+    @property
+    def ambient_temperature(self) -> float:
+        """Ambient temperature in Celsius."""
+        return _decode_tenth_degree_celsius(self.channel_status.get('ambientTemperature', 0))
+
+    @property
+    def discharge_temperature(self) -> float:
+        """Discharge temperature in Celsius."""
+        return _decode_tenth_degree_celsius(self.channel_status.get('dischargeTemperature', 0))
+
+    @property
+    def suction_temperature(self) -> float:
+        """Suction temperature in Celsius."""
+        return _decode_tenth_degree_celsius(self.channel_status.get('suctionTemperature', 0))
+
+    @property
+    def evaporator_temperature(self) -> float:
+        """Evaporator temperature in Celsius."""
+        return _decode_tenth_degree_celsius(self.channel_status.get('evaporatorTemperature', 0))
+
+    @property
+    def current_superheat(self) -> float:
+        """Current superheat in Celsius."""
+        return _decode_tenth_degree_celsius(self.channel_status.get('currentSuperHeat', 0))
+
+    @property
+    def target_superheat(self) -> float:
+        """Target superheat in Celsius."""
+        return _decode_tenth_degree_celsius(self.channel_status.get('targetSuperHeat', 0))
+
+    @property
+    def recirc_faucet_temperature(self) -> float:
+        """Recirculation faucet temperature in Celsius."""
+        return _decode_tenth_degree_celsius(self.channel_status.get('recircFaucetTemperature', 0))
+
     def register_callback(self, callback):
         self.callbacks.append(callback)
 
@@ -1107,16 +1239,17 @@ class MgppDevice:
             finally:
                 self.waiting_for_response = False
 
-    def _celsius_to_raw(self, celsius):
-        """Convert Celsius to raw protocol value (half-degree encoding)"""
-        return int(round(celsius * 2))
-
     async def set_temperature(self, temp_celsius):
-        """Set MGPP device temperature"""
+        """Set MGPP device temperature.
+        
+        Args:
+            temp_celsius: Temperature in Celsius (MGPP always uses Celsius).
+        """
         if not self.waiting_for_response:
             self.waiting_for_response = True
             try:
-                raw_temp = self._celsius_to_raw(temp_celsius)
+                # MGPP always uses half-degree Celsius encoding
+                raw_temp = _encode_half_degree_celsius(temp_celsius)
                 await self.gateway._mgpp_temperature_command(raw_temp, self.channel_number)
                 self.publish_update()
             finally:

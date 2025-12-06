@@ -80,8 +80,13 @@ class NavienWaterHeaterEntity(NavienBaseEntity, WaterHeaterEntity):
 
     @property
     def temperature_unit(self):
-        """Return temperature unit - always Celsius, HA converts to user preference"""
-        return UnitOfTemperature.CELSIUS
+        """Return the device's native temperature unit.
+        
+        Legacy devices can be configured for Celsius or Fahrenheit.
+        Values from the API are already in the native unit.
+        HA handles conversion to user's display preference.
+        """
+        return UnitOfTemperature.CELSIUS if self._device.is_celsius else UnitOfTemperature.FAHRENHEIT
 
     @property
     def is_away_mode_on(self):
@@ -119,8 +124,12 @@ class NavienWaterHeaterEntity(NavienBaseEntity, WaterHeaterEntity):
 
     @property
     def target_temperature_step(self):
-        """Returns the step size setting for temperature."""
-        return 0.5
+        """Returns the step size setting for temperature.
+        
+        Celsius devices use half-degree increments (0.5).
+        Fahrenheit devices use whole degree increments (1).
+        """
+        return 0.5 if self._device.is_celsius else 1
 
     @property
     def min_temp(self):
@@ -133,10 +142,13 @@ class NavienWaterHeaterEntity(NavienBaseEntity, WaterHeaterEntity):
         return self._device.channel_info.get("setupDHWTempMax", 0)
 
     async def async_set_temperature(self, **kwargs):
-        """Set target water temperature"""
+        """Set target water temperature.
+        
+        Temperature is passed in the device's native unit (Celsius or Fahrenheit).
+        The API layer handles wire protocol encoding.
+        """
         target_temp = kwargs.get(ATTR_TEMPERATURE)
-        # Legacy: expects raw value (half-degree celsius)
-        await self._device.set_temperature(target_temp * 2)
+        await self._device.set_temperature(target_temp)
 
     async def async_turn_away_mode_on(self):
         """Turn away mode on."""
