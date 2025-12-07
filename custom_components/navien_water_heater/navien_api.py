@@ -1319,34 +1319,6 @@ class MgppDevice:
 
         return "Unknown error condition"
 
-    def get_status_summary(self):
-        """Get a summary of the current device status"""
-        if not self.channel_status:
-            return "No status data available"
-
-        status_parts = []
-
-        if self.channel_status.get('powerStatus', False):
-            status_parts.append("ON")
-        else:
-            status_parts.append("OFF")
-
-        temp = self.channel_status.get('dhwTemperature', 0)
-        target_temp = self.channel_status.get('dhwTemperatureSetting', 0)
-        status_parts.append(f"Temp: {temp}°F (Target: {target_temp}°F)")
-
-        if self.channel_status.get('hasError', False):
-            error_msg = self.get_error_message()
-            status_parts.append(f"ERROR: {error_msg}")
-
-        if self.channel_status.get('isHeating', False):
-            status_parts.append("HEATING")
-
-        if self.channel_status.get('isEcoMode', False):
-            status_parts.append("ECO MODE")
-
-        return " | ".join(status_parts)
-
     def convert_channel_info(self, channel_info):
         """Convert channel info to include required fields for water_heater.py compatibility"""
         if "temperatureType" not in channel_info:
@@ -1661,7 +1633,8 @@ class MgppMessages:
                 "deviceType": self.device_type,
                 "macAddress": self.mac_address,
                 "mode": "freeze-protection",
-                "param": [],
+                # Param carries the on/off flag (1=OFF, 2=ON) per spec
+                "param": [state_value],
                 "paramStr": ""
             },
             "requestTopic": self.topics.mgpp_control(),
