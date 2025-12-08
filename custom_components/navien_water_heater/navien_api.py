@@ -47,7 +47,7 @@ class NavilinkAccountCoordinator:
     """Coordinator that manages all gateways for a Navien account."""
 
     # The Navien server.
-    navienWebServer = "https://nlus.naviensmartcontrol.com/api/v2"
+    NAVIEN_WEB_SERVER = "https://nlus.naviensmartcontrol.com/api/v2"
 
     # Account-level reconnection settings
     MAX_ACCOUNT_RECONNECT_BACKOFF = 300  # 5 minutes maximum backoff
@@ -90,7 +90,7 @@ class NavilinkAccountCoordinator:
         """
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                NavilinkAccountCoordinator.navienWebServer + "/user/sign-in",
+                NavilinkAccountCoordinator.NAVIEN_WEB_SERVER + "/user/sign-in",
                 json={"userId": self.userId, "password": self.passwd}
             ) as response:
                 if response.status != 200:
@@ -110,7 +110,7 @@ class NavilinkAccountCoordinator:
         headers = {"Authorization": self.user_info.get("token", {}).get("accessToken", "")}
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.post(
-                NavilinkAccountCoordinator.navienWebServer + "/device/list",
+                NavilinkAccountCoordinator.NAVIEN_WEB_SERVER + "/device/list",
                 json={"offset": 0, "count": 20, "userId": self.userId}
             ) as response:
                 if response.status != 200:
@@ -118,7 +118,7 @@ class NavilinkAccountCoordinator:
                 response_data = await response.json()
                 try:
                     self.device_info_list = response_data["data"]
-                    _LOGGER.debug("Response data: " + str(response_data))
+                    _LOGGER.debug(f"Response data: {response_data}")
                 except KeyError:
                     raise NoResponseData("Unexpected problem while retrieving device list")
 
@@ -333,11 +333,11 @@ class NavilinkConnect:
                     await self._connect_aws_mqtt()
                 except (NoAccessKey, UnableToConnect, UserNotFound, NoResponseData, NoChannelInformation) as e:
                     # Fatal errors - don't retry, fail immediately
-                    _LOGGER.error("Fatal connection error during start up: " + str(e))
+                    _LOGGER.error(f"Fatal connection error during start up: {e}")
                     raise
                 except Exception as e:
                     # Transient errors - retry after delay
-                    _LOGGER.error("Transient connection error during start up: " + str(e))
+                    _LOGGER.error(f"Transient connection error during start up: {e}")
                     await asyncio.sleep(15)
                 else:
                     asyncio.create_task(self._start())
@@ -358,7 +358,7 @@ class NavilinkConnect:
                 try:
                     task.result()
                 except Exception as e:
-                    _LOGGER.error(name + ": " + str(type(e).__name__) + ": " + str(e))
+                    _LOGGER.error(f"{name}: {type(e).__name__}: {e}")
             for task in pending:
                 task.cancel()
             if not self.shutting_down:
@@ -535,7 +535,7 @@ class NavilinkConnect:
             async with self.client_lock:
                 await self.loop.run_in_executor(None, subscribe)
         except Exception as e:
-            _LOGGER.debug("Error occurred in async_subscribe: " + str(e))
+            _LOGGER.debug(f"Error occurred in async_subscribe: {e}")
             await self.disconnect(shutting_down=False)
 
     async def async_publish(self, topic, payload, QoS=1, session_id=""):
@@ -564,7 +564,7 @@ class NavilinkConnect:
         except asyncio.TimeoutError:
             raise
         except Exception as e:
-            _LOGGER.debug("Error occurred in async_publish: " + str(e))
+            _LOGGER.debug(f"Error occurred in async_publish: {e}")
             if response_event := self.response_events.get(session_id, None):
                 response_event.clear()
                 self.response_events.pop(session_id, None)
@@ -1924,10 +1924,6 @@ class UserNotFound(Exception):
 
 class NoNavienDevices(Exception):
     """No Navien Devices Found Error"""
-
-
-class NoNetworkConnection(Exception):
-    """Network is unavailable"""
 
 
 class NoResponseData(Exception):
