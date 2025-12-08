@@ -49,6 +49,10 @@ class NavilinkAccountCoordinator:
     # The Navien server.
     navienWebServer = "https://nlus.naviensmartcontrol.com/api/v2"
 
+    # Account-level reconnection settings
+    MAX_ACCOUNT_RECONNECT_BACKOFF = 300  # 5 minutes maximum backoff
+    INITIAL_RECONNECT_BACKOFF = 15  # Start with 15 seconds
+
     def __init__(self, userId, passwd, polling_interval=15, aws_cert_path="AmazonRootCA1.pem"):
         """
         Construct a new 'NavilinkAccountCoordinator' object.
@@ -67,6 +71,8 @@ class NavilinkAccountCoordinator:
         self.device_info_list = []
         self.gateways = {}  # mac_address -> NavilinkConnect
         self._disabled_devices = set()  # Set of device identifiers that should not be polled
+        self._account_reconnect_attempts = 0
+        self._reconnecting = False
 
     @property
     def devices(self):
@@ -188,6 +194,66 @@ class NavilinkAccountCoordinator:
         self._disabled_devices = set(device_identifiers)
         _LOGGER.debug(f"Updated disabled devices: {self._disabled_devices}")
 
+    def gateway_reconnect_failed(self, gateway):
+        """Called by a gateway when it has exceeded its reconnection attempts.
+        
+        Triggers an account-level reconnection with exponential backoff.
+        """
+        _LOGGER.warning(
+            f"Gateway {gateway.mac_address} exceeded reconnection attempts, "
+            f"triggering account-level reconnection"
+        )
+        asyncio.create_task(self._reconnect_account())
+
+    async def _reconnect_account(self):
+        """Perform account-level reconnection with exponential backoff.
+        
+        This performs a complete clean disconnection, destroying all devices
+        and gateways, then reconnects from a clean slate.
+        """
+        if self._reconnecting:
+            _LOGGER.debug("Account reconnection already in progress, skipping")
+            return
+
+        self._reconnecting = True
+        try:
+            # Calculate exponential backoff
+            backoff = min(
+                self.INITIAL_RECONNECT_BACKOFF * (2 ** self._account_reconnect_attempts),
+                self.MAX_ACCOUNT_RECONNECT_BACKOFF
+            )
+            self._account_reconnect_attempts += 1
+
+            _LOGGER.warning(
+                f"Performing account-level reconnection (attempt {self._account_reconnect_attempts}), "
+                f"waiting {backoff}s before reconnecting"
+            )
+
+            # Clean disconnection - destroy all gateways and their devices
+            await self.disconnect()
+            
+            # Clear account-level state for a clean slate
+            self.user_info = None
+            self.device_info_list = []
+
+            # Wait with exponential backoff before attempting reconnection
+            await asyncio.sleep(backoff)
+
+            # Start fresh - this will login and create all gateways
+            await self.start()
+
+            # If we get here, reconnection was successful
+            self._account_reconnect_attempts = 0
+            _LOGGER.info("Account-level reconnection successful")
+
+        except Exception as e:
+            _LOGGER.error(f"Account-level reconnection failed: {e}")
+            # Schedule another reconnection attempt
+            self._reconnecting = False
+            asyncio.create_task(self._reconnect_account())
+        else:
+            self._reconnecting = False
+
 
 class NavilinkConnect:
     """Manages connection to a single NaviLink gateway."""
@@ -195,6 +261,9 @@ class NavilinkConnect:
     # Connection health thresholds
     MAX_CONSECUTIVE_FAILURES = 3
     STALENESS_TIMEOUT_MULTIPLIER = 4
+    
+    # Gateway reconnection limit
+    MAX_GATEWAY_RECONNECT_ATTEMPTS = 3
 
     def __init__(self, user_info, device_info, polling_interval=15, aws_cert_path="AmazonRootCA1.pem", 
                  subscribe_all_topics=False, coordinator=None):
@@ -228,6 +297,7 @@ class NavilinkConnect:
         self.last_poll = None
         self.last_data_received = None
         self.consecutive_poll_failures = 0
+        self.reconnect_attempts = 0
         self.device_type = int(self.device_info.get("deviceInfo", {}).get("deviceType", 1))
 
     @property
@@ -292,7 +362,22 @@ class NavilinkConnect:
             for task in pending:
                 task.cancel()
             if not self.shutting_down:
-                _LOGGER.warning("Connection to AWS IOT Navilink server reset, reconnecting in 15 seconds")
+                self.reconnect_attempts += 1
+                
+                # Check if we've exceeded gateway-level reconnection attempts
+                if self.reconnect_attempts > self.MAX_GATEWAY_RECONNECT_ATTEMPTS:
+                    _LOGGER.error(
+                        f"Gateway {self.mac_address} exceeded max reconnection attempts "
+                        f"({self.MAX_GATEWAY_RECONNECT_ATTEMPTS}), requesting account-level reconnection"
+                    )
+                    if self.coordinator:
+                        self.coordinator.gateway_reconnect_failed(self)
+                    return
+                
+                _LOGGER.warning(
+                    f"Connection to AWS IOT Navilink server reset, reconnecting in 15 seconds "
+                    f"(attempt {self.reconnect_attempts}/{self.MAX_GATEWAY_RECONNECT_ATTEMPTS})"
+                )
                 self.connected = False
                 self.consecutive_poll_failures = 0
                 self.last_data_received = None
@@ -343,6 +428,7 @@ class NavilinkConnect:
             self.last_poll = datetime.now()
             self.last_data_received = datetime.now()
             self.consecutive_poll_failures = 0
+            self.reconnect_attempts = 0  # Reset on successful connection
         else:
             raise NoAccessKey("Missing Access key, Secret key, or Session token")
 
