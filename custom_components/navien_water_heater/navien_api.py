@@ -127,6 +127,12 @@ class NavilinkAccountCoordinator:
     async def start(self):
         """Start the coordinator and all gateway connections."""
         if self.polling_interval > 0:
+            # Ensure clean state before starting - disconnect any existing gateways
+            # This handles the case where the integration is reloaded
+            if self.gateways:
+                _LOGGER.debug("Cleaning up existing gateways before starting")
+                await self.disconnect()
+            
             await self.login()
             
             if not self.device_info_list:
@@ -144,7 +150,16 @@ class NavilinkAccountCoordinator:
                         coordinator=self
                     )
                     self.gateways[mac_address] = gateway
-                    await gateway.start()
+                    result = await gateway.start()
+                    
+                    # If gateway returned None, it triggered account-level reconnection
+                    # Stop processing and let the reconnection handle it
+                    if result is None:
+                        _LOGGER.debug(
+                            f"Gateway {mac_address} triggered account-level reconnection, "
+                            f"stopping coordinator start"
+                        )
+                        return None
 
             if not self.devices:
                 raise NoNavienDevices("No Navien devices found with the given credentials")
@@ -155,7 +170,8 @@ class NavilinkAccountCoordinator:
             return await self.login()
 
     async def disconnect(self):
-        """Disconnect all gateways."""
+        """Disconnect all gateways and clean up state."""
+        _LOGGER.debug(f"Disconnecting {len(self.gateways)} gateways")
         for gateway in self.gateways.values():
             await gateway.disconnect()
         self.gateways.clear()
@@ -240,7 +256,14 @@ class NavilinkAccountCoordinator:
             await asyncio.sleep(backoff)
 
             # Start fresh - this will login and create all gateways
-            await self.start()
+            result = await self.start()
+
+            # Check if start() succeeded or triggered another reconnection
+            if result is None:
+                _LOGGER.warning("Account-level reconnection: start() did not complete, retrying")
+                self._reconnecting = False
+                asyncio.create_task(self._reconnect_account())
+                return
 
             # If we get here, reconnection was successful
             self._account_reconnect_attempts = 0
@@ -336,8 +359,22 @@ class NavilinkConnect:
                     _LOGGER.error(f"Fatal connection error during start up: {e}")
                     raise
                 except Exception as e:
-                    # Transient errors - retry after delay
-                    _LOGGER.error(f"Transient connection error during start up: {e}")
+                    # Transient errors - track attempts and retry after delay
+                    self.reconnect_attempts += 1
+                    
+                    if self.reconnect_attempts > self.MAX_GATEWAY_RECONNECT_ATTEMPTS:
+                        _LOGGER.error(
+                            f"Gateway {self.mac_address} exceeded max connection attempts "
+                            f"({self.MAX_GATEWAY_RECONNECT_ATTEMPTS}), requesting account-level reconnection"
+                        )
+                        if self.coordinator:
+                            self.coordinator.gateway_reconnect_failed(self)
+                        return None
+                    
+                    _LOGGER.error(
+                        f"Transient connection error during start up: {e} "
+                        f"(attempt {self.reconnect_attempts}/{self.MAX_GATEWAY_RECONNECT_ATTEMPTS})"
+                    )
                     await asyncio.sleep(15)
                 else:
                     asyncio.create_task(self._start())
