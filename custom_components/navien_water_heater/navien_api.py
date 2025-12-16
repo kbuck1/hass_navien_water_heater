@@ -126,6 +126,7 @@ class NavilinkAccountCoordinator:
 
     async def start(self):
         """Start the coordinator and all gateway connections."""
+        _LOGGER.debug("Coordinator start() called")
         if self.polling_interval > 0:
             # Ensure clean state before starting - disconnect any existing gateways
             # This handles the case where the integration is reloaded
@@ -133,7 +134,9 @@ class NavilinkAccountCoordinator:
                 _LOGGER.debug("Cleaning up existing gateways before starting")
                 await self.disconnect()
             
+            _LOGGER.debug("Coordinator: logging in")
             await self.login()
+            _LOGGER.debug(f"Coordinator: login complete, found {len(self.device_info_list)} devices")
             
             if not self.device_info_list:
                 raise NoNavienDevices("No Navien devices found with the given credentials")
@@ -142,6 +145,7 @@ class NavilinkAccountCoordinator:
             for device_info in self.device_info_list:
                 mac_address = device_info.get("deviceInfo", {}).get("macAddress", "")
                 if mac_address and mac_address not in self.gateways:
+                    _LOGGER.debug(f"Coordinator: creating gateway for {mac_address}")
                     gateway = NavilinkConnect(
                         user_info=self.user_info,
                         device_info=device_info,
@@ -150,7 +154,9 @@ class NavilinkAccountCoordinator:
                         coordinator=self
                     )
                     self.gateways[mac_address] = gateway
+                    _LOGGER.debug(f"Coordinator: starting gateway {mac_address}")
                     result = await gateway.start()
+                    _LOGGER.debug(f"Coordinator: gateway {mac_address} start returned {result is not None}")
                     
                     # If gateway returned None, it triggered account-level reconnection
                     # Stop processing and let the reconnection handle it
@@ -164,6 +170,7 @@ class NavilinkAccountCoordinator:
             if not self.devices:
                 raise NoNavienDevices("No Navien devices found with the given credentials")
 
+            _LOGGER.debug(f"Coordinator: start complete with {len(self.devices)} devices")
             return self.devices
         else:
             # Just login for validation purposes
@@ -172,9 +179,12 @@ class NavilinkAccountCoordinator:
     async def disconnect(self):
         """Disconnect all gateways and clean up state."""
         _LOGGER.debug(f"Disconnecting {len(self.gateways)} gateways")
-        for gateway in self.gateways.values():
+        for mac_address, gateway in self.gateways.items():
+            _LOGGER.debug(f"Disconnecting gateway {mac_address}")
             await gateway.disconnect()
+            _LOGGER.debug(f"Gateway {mac_address} disconnected")
         self.gateways.clear()
+        _LOGGER.debug("All gateways disconnected and cleared")
 
     def is_device_polling_disabled(self, device_identifier):
         """Check if polling is disabled for a device.
@@ -246,17 +256,22 @@ class NavilinkAccountCoordinator:
             )
 
             # Clean disconnection - destroy all gateways and their devices
+            _LOGGER.debug("Account reconnection: disconnecting all gateways")
             await self.disconnect()
+            _LOGGER.debug("Account reconnection: disconnect complete")
             
             # Clear account-level state for a clean slate
             self.user_info = None
             self.device_info_list = []
 
             # Wait with exponential backoff before attempting reconnection
+            _LOGGER.debug(f"Account reconnection: sleeping for {backoff}s")
             await asyncio.sleep(backoff)
+            _LOGGER.debug("Account reconnection: sleep complete, calling start()")
 
             # Start fresh - this will login and create all gateways
             result = await self.start()
+            _LOGGER.debug(f"Account reconnection: start() returned {result is not None}")
 
             # Check if start() succeeded or triggered another reconnection
             if result is None:
@@ -269,8 +284,12 @@ class NavilinkAccountCoordinator:
             self._account_reconnect_attempts = 0
             _LOGGER.info("Account-level reconnection successful")
 
+        except asyncio.CancelledError:
+            _LOGGER.warning("Account-level reconnection was cancelled")
+            self._reconnecting = False
+            raise
         except Exception as e:
-            _LOGGER.error(f"Account-level reconnection failed: {e}")
+            _LOGGER.error(f"Account-level reconnection failed: {e}", exc_info=True)
             # Schedule another reconnection attempt
             self._reconnecting = False
             asyncio.create_task(self._reconnect_account())
@@ -549,12 +568,30 @@ class NavilinkConnect:
         raise DisconnectEvent("Disconnected from Navilink server...")
 
     async def disconnect(self, shutting_down=True):
+        """Disconnect the gateway and stop all background tasks.
+        
+        Args:
+            shutting_down: If True, prevents reconnection attempts.
+        """
+        _LOGGER.debug(
+            f"Gateway disconnect called: shutting_down={shutting_down}, "
+            f"client={self.client is not None}, connected={self.connected}"
+        )
+        # Always set shutting_down flag to stop background tasks
+        self.shutting_down = shutting_down
+        
+        # Also set the disconnect event to unblock any waiting tasks
+        self.disconnect_event.set()
+        
         if self.client and self.connected:
-            self.shutting_down = shutting_down
             try:
-                await self.loop.run_in_executor(None, self.client.disconnect)
+                # Use asyncio.get_running_loop() instead of stored loop reference
+                # to avoid issues with stale loop references
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self.client.disconnect)
+                _LOGGER.debug("Gateway MQTT client disconnected")
             except Exception as e:
-                _LOGGER.warning(f"Error during disconnect: {e}")
+                _LOGGER.warning(f"Error during MQTT disconnect: {e}")
 
     def _on_online(self):
         self.connected = True
