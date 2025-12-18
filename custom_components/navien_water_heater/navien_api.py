@@ -73,6 +73,7 @@ class NavilinkAccountCoordinator:
         self._disabled_devices = set()  # Set of device identifiers that should not be polled
         self._account_reconnect_attempts = 0
         self._reconnecting = False
+        self._update_callbacks = {}  # device_identifier -> list of callbacks
 
     @property
     def devices(self):
@@ -82,6 +83,54 @@ class NavilinkAccountCoordinator:
             for device_id, device in gateway.devices.items():
                 all_devices[device_id] = device
         return all_devices
+
+    def get_device(self, device_identifier):
+        """Get a device by its unique identifier.
+        
+        Args:
+            device_identifier: The unique identifier for the device
+            
+        Returns:
+            The device object, or None if not found
+        """
+        for gateway in self.gateways.values():
+            for device in gateway.devices.values():
+                if device.device_identifier == device_identifier:
+                    return device
+        return None
+
+    def register_update_callback(self, device_identifier, callback):
+        """Register a callback for device updates.
+        
+        Args:
+            device_identifier: The unique identifier for the device
+            callback: The callback function to call on updates
+        """
+        if device_identifier not in self._update_callbacks:
+            self._update_callbacks[device_identifier] = []
+        self._update_callbacks[device_identifier].append(callback)
+
+    def deregister_update_callback(self, device_identifier, callback):
+        """Deregister a callback for device updates.
+        
+        Args:
+            device_identifier: The unique identifier for the device
+            callback: The callback function to remove
+        """
+        if device_identifier in self._update_callbacks:
+            try:
+                self._update_callbacks[device_identifier].remove(callback)
+            except ValueError:
+                pass
+
+    def publish_device_update(self, device_identifier):
+        """Notify entities that a device has updated.
+        
+        Args:
+            device_identifier: The unique identifier for the device that updated
+        """
+        for callback in self._update_callbacks.get(device_identifier, []):
+            callback()
 
     async def login(self):
         """
@@ -1125,6 +1174,10 @@ class NavilinkDevice:
             self.publish_update()
 
     def publish_update(self):
+        # Use coordinator's callback system for entity updates
+        if self.gateway and self.gateway.coordinator:
+            self.gateway.coordinator.publish_device_update(self.device_identifier)
+        # Keep legacy callback support for backwards compatibility
         if len(self.callbacks) > 0:
             for callback in self.callbacks:
                 self.gateway.loop.call_soon_threadsafe(callback)
@@ -1385,6 +1438,10 @@ class MgppDevice:
             self.publish_update()
 
     def publish_update(self):
+        # Use coordinator's callback system for entity updates
+        if self.gateway and self.gateway.coordinator:
+            self.gateway.coordinator.publish_device_update(self.device_identifier)
+        # Keep legacy callback support for backwards compatibility
         if len(self.callbacks) > 0:
             for callback in self.callbacks:
                 self.gateway.loop.call_soon_threadsafe(callback)

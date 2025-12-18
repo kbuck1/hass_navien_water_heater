@@ -19,19 +19,20 @@ async def async_setup_entry(
     entities = []
     
     for device in coordinator.devices.values():
+        device_id = device.device_identifier
         if isinstance(device, MgppDevice):
             # MGPP-specific switches
-            entities.append(MgppAntiLegionellaSwitchEntity(device))
-            entities.append(MgppFreezeProtectionSwitchEntity(device))
+            entities.append(MgppAntiLegionellaSwitchEntity(coordinator, device_id))
+            entities.append(MgppFreezeProtectionSwitchEntity(coordinator, device_id))
             
             # Hot Button - only if device supports recirculation
             if device.supports_recirculation:
-                entities.append(MgppHotButtonSwitchEntity(device))
+                entities.append(MgppHotButtonSwitchEntity(coordinator, device_id))
         else:
             # Legacy switches
             if device.channel_info.get("onDemandUse", 2) == 1:
-                entities.append(NavienOnDemandSwitchEntity(device))
-            entities.append(NavienPowerSwitchEntity(device))
+                entities.append(NavienOnDemandSwitchEntity(coordinator, device_id))
+            entities.append(NavienPowerSwitchEntity(coordinator, device_id))
     
     async_add_entities(entities)
 
@@ -41,18 +42,18 @@ class NavienOnDemandSwitchEntity(NavienBaseEntity, SwitchEntity):
 
     _attr_name = "Hot Button"
 
-    def __init__(self, device):
+    def __init__(self, coordinator, device_identifier):
         """Initialize the entity."""
-        super().__init__(device)
+        super().__init__(coordinator, device_identifier)
         self._cached_unique_id = None
 
     def _get_legacy_unique_id(self) -> str:
         """Return legacy unique_id format: {mac}{channel}hot_button"""
-        return f"{self._device.mac_address}{self._device.channel_number}hot_button"
+        return f"{self.device.mac_address}{self.device.channel_number}hot_button"
 
     def _get_new_unique_id(self) -> str:
         """Return new unique_id format: {mac}_{channel}_hot_button"""
-        return f"{self._device.device_identifier}_hot_button"
+        return f"{self._device_identifier}_hot_button"
 
     @property
     def unique_id(self):
@@ -73,15 +74,15 @@ class NavienOnDemandSwitchEntity(NavienBaseEntity, SwitchEntity):
     @property
     def is_on(self):
         """Return the current On Demand state."""
-        return self._device.channel_status.get("onDemandUseFlag", False)
+        return self.device.channel_status.get("onDemandUseFlag", False)
 
     async def async_turn_on(self):
         """Turn On Hot Button."""
-        await self._device.set_hot_button_state(True)
+        await self.device.set_hot_button_state(True)
 
     async def async_turn_off(self):
         """Turn Off Hot Button."""
-        await self._device.set_hot_button_state(False)
+        await self.device.set_hot_button_state(False)
 
 
 class NavienPowerSwitchEntity(NavienBaseEntity, SwitchEntity):
@@ -89,18 +90,18 @@ class NavienPowerSwitchEntity(NavienBaseEntity, SwitchEntity):
 
     _attr_name = "Power"
 
-    def __init__(self, device):
+    def __init__(self, coordinator, device_identifier):
         """Initialize the entity."""
-        super().__init__(device)
+        super().__init__(coordinator, device_identifier)
         self._cached_unique_id = None
 
     def _get_legacy_unique_id(self) -> str:
         """Return legacy unique_id format: {mac}{channel}power_button"""
-        return f"{self._device.mac_address}{self._device.channel_number}power_button"
+        return f"{self.device.mac_address}{self.device.channel_number}power_button"
 
     def _get_new_unique_id(self) -> str:
         """Return new unique_id format: {mac}_{channel}_power"""
-        return f"{self._device.device_identifier}_power"
+        return f"{self._device_identifier}_power"
 
     @property
     def unique_id(self):
@@ -121,15 +122,15 @@ class NavienPowerSwitchEntity(NavienBaseEntity, SwitchEntity):
     @property
     def is_on(self):
         """Return the current power state."""
-        return self._device.channel_status.get("powerStatus", False)
+        return self.device.channel_status.get("powerStatus", False)
 
     async def async_turn_on(self):
         """Turn On Power."""
-        await self._device.set_power_state(True)
+        await self.device.set_power_state(True)
 
     async def async_turn_off(self):
         """Turn Off Power."""
-        await self._device.set_power_state(False)
+        await self.device.set_power_state(False)
 
 
 class MgppAntiLegionellaSwitchEntity(NavienBaseEntity, SwitchEntity):
@@ -139,18 +140,18 @@ class MgppAntiLegionellaSwitchEntity(NavienBaseEntity, SwitchEntity):
     _attr_entity_registry_enabled_default = False
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, device):
+    def __init__(self, coordinator, device_identifier):
         """Initialize the entity."""
-        super().__init__(device)
+        super().__init__(coordinator, device_identifier)
         self._cached_unique_id = None
 
     def _get_legacy_unique_id(self) -> str:
         """Return legacy unique_id format: {mac}anti_legionella"""
-        return f"{self._device.mac_address}anti_legionella"
+        return f"{self.device.mac_address}anti_legionella"
 
     def _get_new_unique_id(self) -> str:
         """Return new unique_id format: {mac}_anti_legionella"""
-        return f"{self._device.device_identifier}_anti_legionella"
+        return f"{self._device_identifier}_anti_legionella"
 
     @property
     def unique_id(self):
@@ -172,15 +173,15 @@ class MgppAntiLegionellaSwitchEntity(NavienBaseEntity, SwitchEntity):
     def is_on(self):
         """Return the current Anti-Legionella state."""
         # MGPP typically uses 1=off, 2=on for status flags
-        return self._device.channel_status.get("antiLegionellaUse", 0) == 2
+        return self.device.channel_status.get("antiLegionellaUse", 0) == 2
 
     async def async_turn_on(self):
         """Turn On Anti-Legionella."""
-        await self._device.set_anti_legionella_state(True)
+        await self.device.set_anti_legionella_state(True)
 
     async def async_turn_off(self):
         """Turn Off Anti-Legionella."""
-        await self._device.set_anti_legionella_state(False)
+        await self.device.set_anti_legionella_state(False)
 
 
 class MgppFreezeProtectionSwitchEntity(NavienBaseEntity, SwitchEntity):
@@ -190,18 +191,18 @@ class MgppFreezeProtectionSwitchEntity(NavienBaseEntity, SwitchEntity):
     _attr_entity_registry_enabled_default = False
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, device):
+    def __init__(self, coordinator, device_identifier):
         """Initialize the entity."""
-        super().__init__(device)
+        super().__init__(coordinator, device_identifier)
         self._cached_unique_id = None
 
     def _get_legacy_unique_id(self) -> str:
         """Return legacy unique_id format: {mac}freeze_protection"""
-        return f"{self._device.mac_address}freeze_protection"
+        return f"{self.device.mac_address}freeze_protection"
 
     def _get_new_unique_id(self) -> str:
         """Return new unique_id format: {mac}_freeze_protection"""
-        return f"{self._device.device_identifier}_freeze_protection"
+        return f"{self._device_identifier}_freeze_protection"
 
     @property
     def unique_id(self):
@@ -223,15 +224,15 @@ class MgppFreezeProtectionSwitchEntity(NavienBaseEntity, SwitchEntity):
     def is_on(self):
         """Return the current Freeze Protection state."""
         # MGPP typically uses 1=off, 2=on for status flags
-        return self._device.channel_status.get("freezeProtectionUse", 0) == 2
+        return self.device.channel_status.get("freezeProtectionUse", 0) == 2
 
     async def async_turn_on(self):
         """Turn On Freeze Protection."""
-        await self._device.set_freeze_protection_state(True)
+        await self.device.set_freeze_protection_state(True)
 
     async def async_turn_off(self):
         """Turn Off Freeze Protection."""
-        await self._device.set_freeze_protection_state(False)
+        await self.device.set_freeze_protection_state(False)
 
 
 class MgppHotButtonSwitchEntity(NavienBaseEntity, SwitchEntity):
@@ -239,18 +240,18 @@ class MgppHotButtonSwitchEntity(NavienBaseEntity, SwitchEntity):
 
     _attr_name = "Hot Button"
 
-    def __init__(self, device):
+    def __init__(self, coordinator, device_identifier):
         """Initialize the entity."""
-        super().__init__(device)
+        super().__init__(coordinator, device_identifier)
         self._cached_unique_id = None
 
     def _get_legacy_unique_id(self) -> str:
         """Return legacy unique_id format: {mac}hot_button"""
-        return f"{self._device.mac_address}hot_button"
+        return f"{self.device.mac_address}hot_button"
 
     def _get_new_unique_id(self) -> str:
         """Return new unique_id format: {mac}_hot_button"""
-        return f"{self._device.device_identifier}_hot_button"
+        return f"{self._device_identifier}_hot_button"
 
     @property
     def unique_id(self):
@@ -272,12 +273,12 @@ class MgppHotButtonSwitchEntity(NavienBaseEntity, SwitchEntity):
     def is_on(self):
         """Return the current Hot Button state."""
         # recircHotBtnReady: 2=ready/on, 1=not ready/off
-        return self._device.channel_status.get("recircHotBtnReady", 0) == 2
+        return self.device.channel_status.get("recircHotBtnReady", 0) == 2
 
     async def async_turn_on(self):
         """Turn On Hot Button (trigger recirculation)."""
-        await self._device.set_recirc_hot_button_state(True)
+        await self.device.set_recirc_hot_button_state(True)
 
     async def async_turn_off(self):
         """Turn Off Hot Button."""
-        await self._device.set_recirc_hot_button_state(False)
+        await self.device.set_recirc_hot_button_state(False)

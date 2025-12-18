@@ -118,81 +118,82 @@ async def async_setup_entry(
     sensors = []
     
     for device in coordinator.devices.values():
+        device_id = device.device_identifier
         if isinstance(device, MgppDevice):
             # MGPP-specific sensors
-            sensors.append(MgppSensor(device, 'dhwChargePer', 'DHW Charge',
+            sensors.append(MgppSensor(coordinator, device_id, 'dhwChargePer', 'DHW Charge',
                                       unit=PERCENTAGE, state_class=SensorStateClass.MEASUREMENT))
             
             # Diagnostic sensors - disabled by default
             sensors.extend([
-                MgppSensor(device, 'tankUpperTemperature', 'Tank Upper Temperature',
+                MgppSensor(coordinator, device_id, 'tankUpperTemperature', 'Tank Upper Temperature',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'tankLowerTemperature', 'Tank Lower Temperature',
+                MgppSensor(coordinator, device_id, 'tankLowerTemperature', 'Tank Lower Temperature',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'dischargeTemperature', 'Discharge Temperature',
+                MgppSensor(coordinator, device_id, 'dischargeTemperature', 'Discharge Temperature',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'suctionTemperature', 'Suction Temperature',
+                MgppSensor(coordinator, device_id, 'suctionTemperature', 'Suction Temperature',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'evaporatorTemperature', 'Evaporator Temperature',
+                MgppSensor(coordinator, device_id, 'evaporatorTemperature', 'Evaporator Temperature',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'ambientTemperature', 'Ambient Temperature',
+                MgppSensor(coordinator, device_id, 'ambientTemperature', 'Ambient Temperature',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'wifiRssi', 'WiFi Signal Strength',
+                MgppSensor(coordinator, device_id, 'wifiRssi', 'WiFi Signal Strength',
                           device_class=SensorDeviceClass.SIGNAL_STRENGTH, unit='dBm',
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'currentInstPower', 'Current Instantaneous Power',
+                MgppSensor(coordinator, device_id, 'currentInstPower', 'Current Instantaneous Power',
                           unit=UnitOfPower.WATT, state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
                 # Fan sensors
-                MgppSensor(device, 'targetFanRpm', 'Target Fan RPM',
+                MgppSensor(coordinator, device_id, 'targetFanRpm', 'Target Fan RPM',
                           unit='RPM', state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'currentFanRpm', 'Current Fan RPM',
+                MgppSensor(coordinator, device_id, 'currentFanRpm', 'Current Fan RPM',
                           unit='RPM', state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
                 # Error sensors
-                MgppSensor(device, 'errorCode', 'Error Code',
+                MgppSensor(coordinator, device_id, 'errorCode', 'Error Code',
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'subErrorCode', 'Sub Error Code',
+                MgppSensor(coordinator, device_id, 'subErrorCode', 'Sub Error Code',
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
                 # Energy capacity sensors
-                MgppSensor(device, 'totalEnergyCapacity', 'Total Energy Capacity',
+                MgppSensor(coordinator, device_id, 'totalEnergyCapacity', 'Total Energy Capacity',
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'availableEnergyCapacity', 'Available Energy Capacity',
+                MgppSensor(coordinator, device_id, 'availableEnergyCapacity', 'Available Energy Capacity',
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
                 # Heat pump diagnostic sensors
-                MgppSensor(device, 'eevStep', 'EEV Step',
+                MgppSensor(coordinator, device_id, 'eevStep', 'EEV Step',
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'currentSuperHeat', 'Current Superheat',
+                MgppSensor(coordinator, device_id, 'currentSuperHeat', 'Current Superheat',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'targetSuperHeat', 'Target Superheat',
+                MgppSensor(coordinator, device_id, 'targetSuperHeat', 'Target Superheat',
                           device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'currentStatenum', 'Current State Number',
+                MgppSensor(coordinator, device_id, 'currentStatenum', 'Current State Number',
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(device, 'cumulatedOpTimeEvaFan', 'Evaporator Fan Operating Hours',
+                MgppSensor(coordinator, device_id, 'cumulatedOpTimeEvaFan', 'Evaporator Fan Operating Hours',
                           device_class=SensorDeviceClass.DURATION, unit=UnitOfTime.HOURS,
                           state_class=SensorStateClass.TOTAL_INCREASING, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
@@ -201,10 +202,10 @@ async def async_setup_entry(
             # Recirculation sensors - only if device supports recirculation
             if device.supports_recirculation:
                 sensors.extend([
-                    MgppSensor(device, 'recircDhwFlowRate', 'Recirculation Flow Rate',
+                    MgppSensor(coordinator, device_id, 'recircDhwFlowRate', 'Recirculation Flow Rate',
                               state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                               entity_category=EntityCategory.DIAGNOSTIC),
-                    MgppSensor(device, 'recircFaucetTemperature', 'Recirculation Faucet Temperature',
+                    MgppSensor(coordinator, device_id, 'recircFaucetTemperature', 'Recirculation Faucet Temperature',
                               device_class=SensorDeviceClass.TEMPERATURE, unit=UnitOfTemperature.CELSIUS,
                               state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                               entity_category=EntityCategory.DIAGNOSTIC),
@@ -213,10 +214,10 @@ async def async_setup_entry(
             # Legacy sensors
             navien_units = "us_customary" if device.channel_info.get("temperatureType", 2) == TemperatureType.FAHRENHEIT.value else "metric"
             hass_units = "us_customary" if hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT else "metric"
-            sensors.append(NavienAvgCalorieSensor(device))
+            sensors.append(NavienAvgCalorieSensor(coordinator, device_id))
             for unit_info in device.channel_status.get("unitInfo", {}).get("unitStatusList", []):
                 for sensor_type in ["gasInstantUsage", "accumulatedGasUsage", "DHWFlowRate", "currentInletTemp", "currentOutletTemp"]:
-                    sensors.append(NavienSensor(hass, device, unit_info, sensor_type, get_description(hass_units, navien_units, sensor_type)))
+                    sensors.append(NavienSensor(hass, coordinator, device_id, unit_info, sensor_type, get_description(hass_units, navien_units, sensor_type)))
     
     async_add_entities(sensors)
 
@@ -226,18 +227,18 @@ class NavienAvgCalorieSensor(NavienBaseEntity, SensorEntity):
 
     _attr_name = "Heating Power"
 
-    def __init__(self, device):
+    def __init__(self, coordinator, device_identifier):
         """Initialize the sensor."""
-        super().__init__(device)
+        super().__init__(coordinator, device_identifier)
         self._cached_unique_id = None
 
     def _get_legacy_unique_id(self) -> str:
         """Return legacy unique_id format: {mac}{channel}avgCalorie"""
-        return f"{self._device.mac_address}{self._device.channel_number}avgCalorie"
+        return f"{self.device.mac_address}{self.device.channel_number}avgCalorie"
 
     def _get_new_unique_id(self) -> str:
         """Return new unique_id format: {mac}_{channel}_avg_calorie"""
-        return f"{self._device.device_identifier}_avg_calorie"
+        return f"{self._device_identifier}_avg_calorie"
 
     @property
     def unique_id(self):
@@ -273,15 +274,15 @@ class NavienAvgCalorieSensor(NavienBaseEntity, SensorEntity):
     @property
     def native_value(self) -> StateType:
         """Return the value reported by the sensor."""
-        return self._device.channel_status.get("avgCalorie", 0)
+        return self.device.channel_status.get("avgCalorie", 0)
 
 
 class NavienSensor(NavienBaseEntity, SensorEntity):
     """Representation of a Navien Sensor device."""
 
-    def __init__(self, hass, device, unit_info, sensor_type, sensor_description):
+    def __init__(self, hass, coordinator, device_identifier, unit_info, sensor_type, sensor_description):
         """Initialize the sensor."""
-        super().__init__(device)
+        super().__init__(coordinator, device_identifier)
         self.unit_info = unit_info
         self.sensor_type = sensor_type
         self.sensor_description = sensor_description
@@ -297,8 +298,8 @@ class NavienSensor(NavienBaseEntity, SensorEntity):
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         hass_units = "us_customary" if self.hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT else "metric"
-        navien_units = "us_customary" if self._device.channel_info.get("temperatureType", 2) == TemperatureType.FAHRENHEIT.value else "metric"
-        for unit_info in self._device.channel_status.get("unitInfo", {}).get("unitStatusList", []):
+        navien_units = "us_customary" if self.device.channel_info.get("temperatureType", 2) == TemperatureType.FAHRENHEIT.value else "metric"
+        for unit_info in self.device.channel_status.get("unitInfo", {}).get("unitStatusList", []):
             if unit_info.get("unitNumber", "") == self.unit_number:
                 self.unit_info = unit_info
         self.sensor_description = get_description(hass_units, navien_units, self.sensor_type)
@@ -311,11 +312,11 @@ class NavienSensor(NavienBaseEntity, SensorEntity):
 
     def _get_legacy_unique_id(self) -> str:
         """Return legacy unique_id format: {mac}{channel}{unit}{type}"""
-        return f"{self._device.mac_address}{self._device.channel_number}{self.unit_info.get('unitNumber', '')}{self.sensor_type}"
+        return f"{self.device.mac_address}{self.device.channel_number}{self.unit_info.get('unitNumber', '')}{self.sensor_type}"
 
     def _get_new_unique_id(self) -> str:
         """Return new unique_id format: {mac}_{channel}_{unit}_{type}"""
-        return f"{self._device.device_identifier}_{self.unit_info.get('unitNumber', '')}_{self.sensor_type}"
+        return f"{self._device_identifier}_{self.unit_info.get('unitNumber', '')}_{self.sensor_type}"
 
     @property
     def unique_id(self):
@@ -370,10 +371,10 @@ class MgppSensor(NavienBaseEntity, SensorEntity):
         'recircFaucetTemperature': 'recirc_faucet_temperature',
     }
 
-    def __init__(self, device, sensor_key, name, device_class=None,
+    def __init__(self, coordinator, device_identifier, sensor_key, name, device_class=None,
                  unit=None, state_class=None, enabled_default=True,
                  entity_category=None):
-        super().__init__(device)
+        super().__init__(coordinator, device_identifier)
         self.sensor_key = sensor_key
         self._attr_name = name
         self._device_class = device_class
@@ -385,11 +386,11 @@ class MgppSensor(NavienBaseEntity, SensorEntity):
 
     def _get_legacy_unique_id(self) -> str:
         """Return legacy unique_id format: {mac}{key}"""
-        return f"{self._device.mac_address}{self.sensor_key}"
+        return f"{self.device.mac_address}{self.sensor_key}"
 
     def _get_new_unique_id(self) -> str:
         """Return new unique_id format: {mac}_{key}"""
-        return f"{self._device.device_identifier}_{self.sensor_key}"
+        return f"{self._device_identifier}_{self.sensor_key}"
 
     @property
     def unique_id(self):
@@ -428,10 +429,10 @@ class MgppSensor(NavienBaseEntity, SensorEntity):
         # For temperature sensors, use MgppDevice properties which handle decoding
         if self.sensor_key in self.TEMP_PROPERTY_MAP:
             prop_name = self.TEMP_PROPERTY_MAP[self.sensor_key]
-            return getattr(self._device, prop_name, 0.0)
+            return getattr(self.device, prop_name, 0.0)
 
         # Return raw value for non-temperature sensors
-        return self._device.channel_status.get(self.sensor_key, 0)
+        return self.device.channel_status.get(self.sensor_key, 0)
 
     @property
     def entity_registry_enabled_default(self):

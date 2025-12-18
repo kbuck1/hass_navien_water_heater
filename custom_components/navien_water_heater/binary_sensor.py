@@ -25,25 +25,26 @@ async def async_setup_entry(
     sensors = []
     
     for device in coordinator.devices.values():
+        device_id = device.device_identifier
         if isinstance(device, MgppDevice):
             # MGPP diagnostic sensors - disabled by default
             sensors.extend([
-                MgppBinarySensor(device, 'heatUpperUse', 'Upper Heating Element',
+                MgppBinarySensor(coordinator, device_id, 'heatUpperUse', 'Upper Heating Element',
                                 device_class=BinarySensorDeviceClass.HEAT, enabled_default=False,
                                 entity_category=EntityCategory.DIAGNOSTIC),
-                MgppBinarySensor(device, 'heatLowerUse', 'Lower Heating Element',
+                MgppBinarySensor(coordinator, device_id, 'heatLowerUse', 'Lower Heating Element',
                                 device_class=BinarySensorDeviceClass.HEAT, enabled_default=False,
                                 entity_category=EntityCategory.DIAGNOSTIC),
-                MgppBinarySensor(device, 'compUse', 'Heat Pump Compressor',
+                MgppBinarySensor(coordinator, device_id, 'compUse', 'Heat Pump Compressor',
                                 device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False,
                                 entity_category=EntityCategory.DIAGNOSTIC),
-                MgppBinarySensor(device, 'evaFanUse', 'Evaporator Fan',
+                MgppBinarySensor(coordinator, device_id, 'evaFanUse', 'Evaporator Fan',
                                 device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False,
                                 entity_category=EntityCategory.DIAGNOSTIC),
-                MgppBinarySensor(device, 'eevUse', 'Electronic Expansion Valve',
+                MgppBinarySensor(coordinator, device_id, 'eevUse', 'Electronic Expansion Valve',
                                 device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False,
                                 entity_category=EntityCategory.DIAGNOSTIC),
-                MgppBinarySensor(device, 'operationBusy', 'System Heating',
+                MgppBinarySensor(coordinator, device_id, 'operationBusy', 'System Heating',
                                 device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False,
                                 entity_category=EntityCategory.DIAGNOSTIC),
             ])
@@ -51,10 +52,10 @@ async def async_setup_entry(
             # Recirculation binary sensors - only if device supports recirculation
             if device.supports_recirculation:
                 sensors.extend([
-                    MgppBinarySensor(device, 'recircHotBtnReady', 'Hot Button Ready',
+                    MgppBinarySensor(coordinator, device_id, 'recircHotBtnReady', 'Hot Button Ready',
                                     enabled_default=False,
                                     entity_category=EntityCategory.DIAGNOSTIC),
-                    MgppBinarySensor(device, 'recircPumpOperationStatus', 'Recirculation Pump',
+                    MgppBinarySensor(coordinator, device_id, 'recircPumpOperationStatus', 'Recirculation Pump',
                                     device_class=BinarySensorDeviceClass.RUNNING, enabled_default=False,
                                     entity_category=EntityCategory.DIAGNOSTIC),
                 ])
@@ -65,9 +66,9 @@ async def async_setup_entry(
 class MgppBinarySensor(NavienBaseEntity, BinarySensorEntity):
     """Representation of an MGPP diagnostic binary sensor"""
 
-    def __init__(self, device, sensor_key, name, device_class=None, enabled_default=True,
+    def __init__(self, coordinator, device_identifier, sensor_key, name, device_class=None, enabled_default=True,
                  entity_category=None):
-        super().__init__(device)
+        super().__init__(coordinator, device_identifier)
         self.sensor_key = sensor_key
         self._attr_name = name
         self._device_class = device_class
@@ -77,11 +78,11 @@ class MgppBinarySensor(NavienBaseEntity, BinarySensorEntity):
 
     def _get_legacy_unique_id(self) -> str:
         """Return legacy unique_id format: {mac}{key}"""
-        return f"{self._device.mac_address}{self.sensor_key}"
+        return f"{self.device.mac_address}{self.sensor_key}"
 
     def _get_new_unique_id(self) -> str:
         """Return new unique_id format: {mac}_{key}"""
-        return f"{self._device.device_identifier}_{self.sensor_key}"
+        return f"{self._device_identifier}_{self.sensor_key}"
 
     @property
     def unique_id(self):
@@ -108,7 +109,7 @@ class MgppBinarySensor(NavienBaseEntity, BinarySensorEntity):
     def is_on(self):
         """Return the state of the sensor."""
         # MGPP typically uses 1=off, 2=on for status flags
-        return self._device.channel_status.get(self.sensor_key, 0) == 2
+        return self.device.channel_status.get(self.sensor_key, 0) == 2
 
     @property
     def entity_registry_enabled_default(self):

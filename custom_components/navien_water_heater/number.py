@@ -24,7 +24,7 @@ async def async_setup_entry(
     for device in coordinator.devices.values():
         if isinstance(device, MgppDevice):
             # Only create for MGPP devices
-            devices.append(NavienVacationModeDurationNumberEntity(device))
+            devices.append(NavienVacationModeDurationNumberEntity(coordinator, device.device_identifier))
     
     async_add_entities(devices)
 
@@ -35,29 +35,31 @@ class NavienVacationModeDurationNumberEntity(NavienBaseEntity, NumberEntity):
     _attr_name = "Vacation Mode Duration"
     _attr_entity_category = EntityCategory.CONFIG
 
-    def __init__(self, device: MgppDevice):
+    def __init__(self, coordinator, device_identifier):
         """Initialize the vacation mode duration number entity."""
-        super().__init__(device)
+        super().__init__(coordinator, device_identifier)
         self._value = 7  # Default to 7 days
 
     async def async_added_to_hass(self) -> None:
         """Run when this Entity has been added to HA."""
         await super().async_added_to_hass()
         # Try to restore the value from channel status if available
-        vacation_days = self._device.channel_status.get("vacationDaySetting")
-        if vacation_days is not None and vacation_days > 0:
-            self._value = int(vacation_days)
-            self._device.vacation_days = int(vacation_days)
-        else:
-            # Ensure default is 7 if no valid value from device
-            self._value = 7
-            # Initialize device's vacation_days with our default value
-            self._device.vacation_days = self._value
+        device = self.device
+        if device:
+            vacation_days = device.channel_status.get("vacationDaySetting")
+            if vacation_days is not None and vacation_days > 0:
+                self._value = int(vacation_days)
+                device.vacation_days = int(vacation_days)
+            else:
+                # Ensure default is 7 if no valid value from device
+                self._value = 7
+                # Initialize device's vacation_days with our default value
+                device.vacation_days = self._value
 
     @property
     def unique_id(self):
         """Return the unique ID of the entity."""
-        return f"{self._device.device_identifier}_vacation_mode_duration"
+        return f"{self._device_identifier}_vacation_mode_duration"
 
     @property
     def native_value(self) -> float:
@@ -95,6 +97,8 @@ class NavienVacationModeDurationNumberEntity(NavienBaseEntity, NumberEntity):
         days = int(max(1, min(99, round(value))))
         self._value = days
         # Update the device's vacation_days so it's used when vacation mode is enabled
-        self._device.vacation_days = days
+        device = self.device
+        if device:
+            device.vacation_days = days
         _LOGGER.debug(f"Vacation mode duration set to {days} days")
         self.async_write_ha_state()
