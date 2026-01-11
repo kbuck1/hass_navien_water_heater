@@ -430,6 +430,13 @@ class NavilinkConnect:
                     # Transient errors - track attempts and retry after delay
                     self.reconnect_attempts += 1
                     
+                    # Ensure we're in a clean state for retry.
+                    # The MQTT connect() may have succeeded (setting self.connected = True via
+                    # _on_online callback) before a subsequent step failed. Without resetting
+                    # self.connected to False, the while loop would exit after sleeping.
+                    self.connected = False
+                    await self._stop_mqtt_client()
+                    
                     if self.reconnect_attempts > self.MAX_GATEWAY_RECONNECT_ATTEMPTS:
                         _LOGGER.error(
                             f"Gateway {self.mac_address} exceeded max connection attempts "
@@ -659,7 +666,18 @@ class NavilinkConnect:
         # Also set the disconnect event to unblock any waiting tasks
         self.disconnect_event.set()
         
-        if self.client and self.connected:
+        # Mark as disconnected so entities show as unavailable
+        was_connected = self.connected
+        self.connected = False
+        
+        # Notify entities that devices are now unavailable.
+        # This must happen BEFORE we disconnect the MQTT client so entities
+        # can update their state in Home Assistant.
+        if was_connected:
+            for device in self.devices.values():
+                device.publish_update()
+        
+        if self.client and was_connected:
             try:
                 # Use asyncio.get_running_loop() instead of stored loop reference
                 # to avoid issues with stale loop references
