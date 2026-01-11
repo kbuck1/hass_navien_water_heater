@@ -486,6 +486,12 @@ class NavilinkConnect:
                 self.connected = False
                 self.consecutive_poll_failures = 0
                 self.last_data_received = None
+                
+                # Explicitly disconnect the MQTT client to stop the SDK's background thread
+                # from attempting its own auto-reconnection (which would cause uncaught exceptions
+                # in the SDK's _thread_main if it fails - this is an upstream SDK bug)
+                await self._stop_mqtt_client()
+                
                 await asyncio.sleep(15)
                 asyncio.create_task(self.start())
 
@@ -615,6 +621,27 @@ class NavilinkConnect:
         await self.disconnect_event.wait()
         self.disconnect_event.clear()
         raise DisconnectEvent("Disconnected from Navilink server...")
+
+    async def _stop_mqtt_client(self):
+        """Stop the MQTT client to prevent SDK's background thread from auto-reconnecting.
+        
+        This method is called before reconnection to ensure the SDK's background thread
+        is stopped. The AWSIoTPythonSDK has a bug where exceptions during auto-reconnection
+        in its _thread_main are not caught, causing "Uncaught thread exception" errors.
+        By explicitly disconnecting the client, we stop the SDK's loop_forever() thread.
+        """
+        if self.client:
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self.client.disconnect)
+                _LOGGER.debug("MQTT client stopped to prevent SDK auto-reconnect")
+            except Exception as e:
+                # Log at debug level since this is expected to sometimes fail
+                # (e.g., if the connection is already fully closed)
+                _LOGGER.debug(f"Error stopping MQTT client (may be expected): {e}")
+            finally:
+                # Clear client reference so a fresh client is created on reconnect
+                self.client = None
 
     async def disconnect(self, shutting_down=True):
         """Disconnect the gateway and stop all background tasks.
