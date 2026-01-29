@@ -385,6 +385,7 @@ class NavilinkConnect:
         self.disconnect_event = asyncio.Event()
         self.response_events = {}
         self.client_lock = asyncio.Lock()
+        self.connection_lock = asyncio.Lock()  # Prevents concurrent connection attempts
         self.last_poll = None
         self.last_data_received = None
         self.consecutive_poll_failures = 0
@@ -419,44 +420,50 @@ class NavilinkConnect:
     async def start(self):
         """Start the gateway connection."""
         if self.polling_interval > 0:
-            while not self.connected and not self.shutting_down:
-                try:
-                    await self._connect_aws_mqtt()
-                except (NoAccessKey, UnableToConnect, UserNotFound, NoResponseData, NoChannelInformation) as e:
-                    # Fatal errors - don't retry, fail immediately
-                    _LOGGER.error(f"Fatal connection error during start up: {e}")
-                    raise
-                except Exception as e:
-                    # Transient errors - track attempts and retry after delay
-                    self.reconnect_attempts += 1
-                    
-                    # Ensure we're in a clean state for retry.
-                    # The MQTT connect() may have succeeded (setting self.connected = True via
-                    # _on_online callback) before a subsequent step failed. Without resetting
-                    # self.connected to False, the while loop would exit after sleeping.
-                    self.connected = False
-                    await self._stop_mqtt_client()
-                    
-                    if self.reconnect_attempts > self.MAX_GATEWAY_RECONNECT_ATTEMPTS:
+            # Prevent concurrent connection attempts which can create orphaned clients
+            if self.connection_lock.locked():
+                _LOGGER.debug("Connection attempt already in progress, skipping")
+                return None
+            
+            async with self.connection_lock:
+                while not self.connected and not self.shutting_down:
+                    try:
+                        await self._connect_aws_mqtt()
+                    except (NoAccessKey, UnableToConnect, UserNotFound, NoResponseData, NoChannelInformation) as e:
+                        # Fatal errors - don't retry, fail immediately
+                        _LOGGER.error(f"Fatal connection error during start up: {e}")
+                        raise
+                    except Exception as e:
+                        # Transient errors - track attempts and retry after delay
+                        self.reconnect_attempts += 1
+                        
+                        # Ensure we're in a clean state for retry.
+                        # The MQTT connect() may have succeeded (setting self.connected = True via
+                        # _on_online callback) before a subsequent step failed. Without resetting
+                        # self.connected to False, the while loop would exit after sleeping.
+                        self.connected = False
+                        await self._stop_mqtt_client()
+                        
+                        if self.reconnect_attempts > self.MAX_GATEWAY_RECONNECT_ATTEMPTS:
+                            _LOGGER.error(
+                                f"Gateway {self.mac_address} exceeded max connection attempts "
+                                f"({self.MAX_GATEWAY_RECONNECT_ATTEMPTS}), requesting account-level reconnection"
+                            )
+                            if self.coordinator:
+                                self.coordinator.gateway_reconnect_failed(self)
+                            return None
+                        
                         _LOGGER.error(
-                            f"Gateway {self.mac_address} exceeded max connection attempts "
-                            f"({self.MAX_GATEWAY_RECONNECT_ATTEMPTS}), requesting account-level reconnection"
+                            f"Transient connection error during start up: {e} "
+                            f"(attempt {self.reconnect_attempts}/{self.MAX_GATEWAY_RECONNECT_ATTEMPTS})"
                         )
-                        if self.coordinator:
-                            self.coordinator.gateway_reconnect_failed(self)
-                        return None
-                    
-                    _LOGGER.error(
-                        f"Transient connection error during start up: {e} "
-                        f"(attempt {self.reconnect_attempts}/{self.MAX_GATEWAY_RECONNECT_ATTEMPTS})"
-                    )
-                    await asyncio.sleep(15)
-                else:
-                    asyncio.create_task(self._start())
-                    if len(self.devices) > 0:
-                        return self.devices
+                        await asyncio.sleep(15)
                     else:
-                        raise NoNavienDevices("No Navien devices found for this gateway")
+                        asyncio.create_task(self._start())
+                        if len(self.devices) > 0:
+                            return self.devices
+                        else:
+                            raise NoNavienDevices("No Navien devices found for this gateway")
 
     async def _start(self):
         if not self.shutting_down:
@@ -503,6 +510,13 @@ class NavilinkConnect:
                 asyncio.create_task(self.start())
 
     async def _connect_aws_mqtt(self):
+        # IMPORTANT: Stop any existing client BEFORE creating a new one.
+        # This prevents orphaned clients that could still receive data and
+        # trigger spurious disconnect events via their registered callbacks.
+        if self.client is not None:
+            _LOGGER.debug("Stopping existing MQTT client before creating new connection")
+            await self._stop_mqtt_client()
+        
         self.client_id = str(uuid.uuid4())
         if self._uses_mgpp_protocol():
             self.topics = MgppTopics(self.user_info, self.device_info, self.client_id)
@@ -516,6 +530,11 @@ class NavilinkConnect:
         sessionToken = self.user_info.get("token", {}).get("sessionToken", None)
 
         if accessKeyId and secretKey and sessionToken:
+            # Clear any stale disconnect events before creating new connection.
+            # This prevents orphaned clients' callbacks from triggering reconnection
+            # for the new connection.
+            self.disconnect_event.clear()
+            
             self.client = mqtt.AWSIoTMQTTClient(
                 clientID=self.client_id, protocolType=4, useWebsocket=True, cleanSession=True
             )
@@ -546,7 +565,10 @@ class NavilinkConnect:
             self.last_poll = datetime.now()
             self.last_data_received = datetime.now()
             self.consecutive_poll_failures = 0
-            self.reconnect_attempts = 0  # Reset on successful connection
+            # Note: reconnect_attempts is NOT reset here - only after the connection
+            # proves stable through successful polling. This prevents infinite
+            # reconnection loops when the connection is briefly established but
+            # immediately drops.
         else:
             raise NoAccessKey("Missing Access key, Secret key, or Session token")
 
@@ -589,6 +611,13 @@ class NavilinkConnect:
                                 f"Poll succeeded after {self.consecutive_poll_failures} failures, resetting counter"
                             )
                         self.consecutive_poll_failures = 0
+                        # Reset reconnect attempts on successful poll - this proves
+                        # the connection is actually stable, not just briefly established
+                        if self.reconnect_attempts > 0:
+                            _LOGGER.debug(
+                                f"Connection stable after {self.reconnect_attempts} reconnection attempts, resetting counter"
+                            )
+                            self.reconnect_attempts = 0
                     for device_num, device in self.devices.items():
                         _LOGGER.debug(f"Device {device_num} status after polling: {device.channel_status}")
             self.last_poll = datetime.now()
