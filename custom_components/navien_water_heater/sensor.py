@@ -154,9 +154,9 @@ async def async_setup_entry(
                           device_class=SensorDeviceClass.SIGNAL_STRENGTH, unit='dBm',
                           state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
                           entity_category=EntityCategory.DIAGNOSTIC),
-                MgppSensor(coordinator, device_id, 'currentInstPower', 'Current Instantaneous Power',
-                          unit=UnitOfPower.WATT, state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
-                          entity_category=EntityCategory.DIAGNOSTIC),
+                MgppSensor(coordinator, device_id, 'currentInstPower', 'Power',
+                          device_class=SensorDeviceClass.POWER, unit=UnitOfPower.WATT,
+                          state_class=SensorStateClass.MEASUREMENT, enabled_default=False),
                 # Fan sensors
                 MgppSensor(coordinator, device_id, 'targetFanRpm', 'Target Fan RPM',
                           unit='RPM', state_class=SensorStateClass.MEASUREMENT, enabled_default=False,
