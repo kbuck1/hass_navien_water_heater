@@ -20,7 +20,7 @@ def _get_disabled_device_identifiers(hass: HomeAssistant) -> set[str]:
     
     for device in device_registry.devices.values():
         # Check if this is a Navien device
-        for domain, identifier in device.identifiers:
+        for domain, identifier, *_ in device.identifiers:
             if domain == DOMAIN and device.disabled_by is not None:
                 disabled_identifiers.add(identifier)
     
